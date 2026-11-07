@@ -331,17 +331,20 @@ with tab_pnl:
                 st.rerun()
             except Exception as exc:                            # noqa: BLE001
                 st.error(f"Could not save: {type(exc).__name__}")
+    def _res(kind, text):
+        st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
+
     if tc2.button("➕ Test trade now (follows the current signal)"):
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
         dsig = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
         if not data_ok or live_price is None:
-            st.error("No live data available right now.")
+            _res("error", "No live data available right now.")
         elif not (in_win_now or S["test_mode"]):
-            st.warning("Outside the Tue–Thu 7–11pm IST window and test mode is stopped. "
+            _res("warning", "Outside the Tue–Thu 7–11pm IST window and test mode is stopped. "
                        "Press 'Start test mode' first to force a test trade.")
         elif dsig.empty:
-            st.warning("There is no directional signal in the loaded sample to follow.")
+            _res("warning", "There is no directional signal in the loaded sample to follow.")
         else:
             last = dsig.iloc[-1]
             side = int(last["signal_side"])
@@ -351,7 +354,15 @@ with tab_pnl:
                 why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
                                           level_iso, quote_currency)
                 if why:
-                    st.warning(f"Blocked by your trader rules: {why}. (Only the timing window is bypassed in a test.)")
+                    hint = next((h for k, h in {
+                        "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
+                        "level already": "That signal's level already has an open trade. Wait for it to close or for a new signal.",
+                        "max open": "Raise 'Max open trades' in Settings, or wait for a trade to close.",
+                        "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
+                        "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
+                        if why.startswith(k)), "")
+                    _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
+                                    "(A test only bypasses the timing window, not your other rules.)")
                 else:
                     item = engine.build_trade(
                         fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
@@ -369,10 +380,13 @@ with tab_pnl:
                     read_key.clear()
                     state = fresh
                     ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
-                    st.success(f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following the "
+                    _res("success", f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following the "
                                f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago.")
             except Exception as exc:                                        # noqa: BLE001
-                st.error(f"Could not place the test trade: {type(exc).__name__}")
+                _res("error", f"Could not place the test trade: {type(exc).__name__}")
+    res = st.session_state.get("test_result")
+    if res:                                                    # stays visible across the 30-second auto-refresh
+        {"success": st.success, "warning": st.warning, "error": st.error}[res[0]](f"{res[2]} IST · {res[1]}")
     st.caption("A test trade is placed instantly when the window is open or test mode is started. It uses your Demo "
                "trader settings (lot, TP/SL, fee, filters, max open trades).")
     mode = st.radio("Show", ["All", "WINDOW", "TEST"], horizontal=True)
