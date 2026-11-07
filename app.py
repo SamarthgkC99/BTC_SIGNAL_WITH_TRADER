@@ -320,36 +320,49 @@ with tab_pnl:
             except Exception as exc:                            # noqa: BLE001
                 st.error(f"Could not save: {type(exc).__name__}")
     if tc2.button("➕ Test trade now (follows the current signal)"):
+        now_t = pd.Timestamp.now(tz="UTC")
+        in_win_now = in_trade_window(now_t)
+        dsig = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
         if not data_ok or live_price is None:
             st.error("No live data available right now.")
+        elif not (in_win_now or S["test_mode"]):
+            st.warning("Outside the Tue–Thu 7–11pm IST window and test mode is stopped. "
+                       "Press 'Start test mode' first to force a test trade.")
+        elif dsig.empty:
+            st.warning("There is no directional signal in the loaded sample to follow.")
         else:
-            dsig = events[events["signal_side"] != 0] if not events.empty else events
-            if dsig.empty:
-                st.warning("There is no directional signal in the loaded sample to follow.")
-            else:
-                last = dsig.iloc[-1]
-                side = int(last["signal_side"])
-                level_iso = last["level_time"].isoformat()
-                why = engine.block_reason(state, S, last["origin_direction"], bool(last["level_invalidated"]),
+            last = dsig.iloc[-1]
+            side = int(last["signal_side"])
+            level_iso = last["level_time"].isoformat()
+            try:
+                fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
+                why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
                                           level_iso, quote_currency)
                 if why:
                     st.warning(f"Blocked by your trader rules: {why}. (Only the timing window is bypassed in a test.)")
                 else:
                     item = engine.build_trade(
-                        0, S, side, last["pattern"], last["origin_direction"], bool(last["level_invalidated"]),
-                        level_iso, last["level_price"], chart_df["open_time"].iloc[-1].isoformat(),
-                        pd.Timestamp.now(tz="UTC").isoformat(), live_price, data_source, "TEST", "manual")
-                    item["quote"] = quote_currency
-                    try:
-                        STORE.push("queue", item)
-                        ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
-                        st.success(f"Queued TEST {SIDE_LABEL[side]} at {live_price:,.2f} following the "
-                                   f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago. "
-                                   "It appears in your trades within about 30 seconds.")
-                    except Exception as exc:                    # noqa: BLE001
-                        st.error(f"Could not queue the test trade: {type(exc).__name__}")
-    st.caption("Test trades use your Demo trader settings (lot, TP/SL, fee, filters, max open trades). "
-               "Only the Tue–Thu 7–11pm IST window is bypassed.")
+                        fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
+                        bool(last["level_invalidated"]), level_iso, last["level_price"],
+                        chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
+                        data_source, "WINDOW" if in_win_now else "TEST", "manual")
+                    fresh["next_id"] += 1
+                    fresh["trades"].append(item)
+                    fresh["signals"].append({
+                        "event_time": last["event_time"].isoformat(), "pattern": last["pattern"],
+                        "side": SIDE_LABEL[side], "price": float(live_price),
+                        "origin_direction": last["origin_direction"], "level_invalidated": bool(last["level_invalidated"]),
+                        "in_trade_window": bool(in_win_now), "source": data_source, "action": "TRADED (manual test)"})
+                    STORE.write("state", fresh)
+                    read_key.clear()
+                    state = fresh
+                    ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
+                    st.success(f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following the "
+                               f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago.")
+            except Exception as exc:                                        # noqa: BLE001
+                st.error(f"Could not place the test trade: {type(exc).__name__}")
+    st.caption("A test trade is placed instantly when the window is open or test mode is started. It uses your Demo "
+               "trader settings (lot, TP/SL, fee, filters, max open trades).")
     mode = st.radio("Show", ["All", "WINDOW", "TEST"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
@@ -389,9 +402,9 @@ with tab_act:
         st.caption("No trades yet. Trades appear here once the worker sees a signal "
                    "(inside the window, or anytime with Test mode on).")
     else:
-        td = td.sort_values("id", ascending=False).copy()
+        td = td.sort_values("entry_time", ascending=False).copy()
         td["entry_ist"] = ist_str(td["entry_time"])
-        td["exit_ist"] = ist_str(td["exit_time"]) if td["exit_time"].notna().any() else ""
+        td["exit_ist"] = ist_str(td["exit_time"]).fillna("") if td["exit_time"].notna().any() else ""
         cols = ["id", "mode", "trigger", "status", "side", "pattern", "origin_direction", "level_invalidated", "entry_ist",
                 "entry_price", "exit_ist", "exit_price", "exit_reason", "bars_held", "pnl_usd",
                 "future_high_excursion_pct", "source"]

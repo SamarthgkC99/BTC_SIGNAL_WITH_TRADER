@@ -23,9 +23,10 @@ Trading rules (all editable in Settings)
 
 Test controls (Live P&L tab)
   Start/Stop test mode: bypasses ONLY the Tue-Thu 7-11pm IST window (trades tagged TEST).
-  Test trade now: opens one TEST trade in the direction of the latest signal at the live price.
-  It follows every trader rule (lot, TP/SL, fee, origin filter, skip-invalidated filter, max open
-  trades, one open trade per level, USD-data rule). The background worker picks it up within ~30 s.
+  Test trade now: places ONE trade instantly in the direction of the latest signal at the live price,
+  when the trade window is open or test mode has been started. It follows every trader rule (lot,
+  TP/SL, fee, origin filter, skip-invalidated filter, max open trades, one open trade per level,
+  USD-data rule). Outside the window with test mode stopped, it asks you to start test mode first.
 
 Price provider (sidebar)
   Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).

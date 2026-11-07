@@ -10,6 +10,7 @@ Rules
 Candles are processed in order, so a late or restarted worker never double-trades.
 """
 import traceback
+import uuid
 
 import pandas as pd
 
@@ -99,7 +100,7 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
                 event_open_time_iso, entry_time_iso, entry, source, mode, trigger="auto"):
     tp_f, sl_f = s["tp_pct"] / 100.0, s["sl_pct"] / 100.0
     return {
-        "id": trade_id, "status": "OPEN", "mode": mode, "trigger": trigger,
+        "id": trade_id, "uid": uuid.uuid4().hex[:10], "status": "OPEN", "mode": mode, "trigger": trigger,
         "side": SIDE_LABEL[side], "side_num": side, "pattern": pattern,
         "origin_direction": origin, "level_invalidated": bool(invalidated),
         "level_time": level_time_iso, "level_price": float(level_price),
@@ -140,46 +141,6 @@ def _consider(state, s, ev, latest_open, iv, source, quote):
     state["signals"].append(sig)
 
 
-def absorb_queue(store):
-    """Move manually queued test trades (from the page's button) into the paper account."""
-    try:
-        items = store.pop_all("queue")
-    except Exception as exc:                                  # noqa: BLE001
-        print(f"[worker] queue read failed: {exc}", flush=True)
-        return 0
-    if not items:
-        return 0
-    try:
-        s = merge_settings(store.read("settings"))
-        state = store.read("state") or new_state(s)
-        for it in items:
-            reason = block_reason(state, s, it["origin_direction"], it["level_invalidated"],
-                                  it["level_time"], it.get("quote", "USDT"))
-            sig = {"event_time": it["entry_time"], "pattern": it["pattern"], "side": it["side"],
-                   "price": it["entry_price"], "origin_direction": it["origin_direction"],
-                   "level_invalidated": it["level_invalidated"], "in_trade_window": False,
-                   "source": it["source"], "action": ""}
-            if reason:
-                sig["action"] = "SKIPPED (manual test): " + reason
-            else:
-                it.pop("quote", None)
-                it["id"] = state["next_id"]
-                state["next_id"] += 1
-                state["trades"].append(it)
-                sig["action"] = "TRADED (manual test)"
-            state["signals"].append(sig)
-        store.write("state", state)
-        return len(items)
-    except Exception as exc:                                  # noqa: BLE001
-        print(f"[worker] queue absorb failed, re-queueing: {exc}", flush=True)
-        for it in items:
-            try:
-                store.push("queue", it)
-            except Exception:                                 # noqa: BLE001
-                pass
-        return 0
-
-
 def process(state, s, closed, events, source, quote, now=None):
     """Pure state transition: apply new closed candles/events to the paper account."""
     now = now if now is not None else pd.Timestamp.now(tz="UTC")
@@ -202,6 +163,24 @@ def process(state, s, closed, events, source, quote, now=None):
     return state
 
 
+def _merge_foreign(state, fresh):
+    """Keep trades/signals the page added (test trades) while this cycle was running."""
+    own_uids = {t.get("uid") for t in state["trades"]}
+    own_ids = {t["id"] for t in state["trades"]}
+    for t in fresh.get("trades", []):
+        if t.get("uid") and t["uid"] not in own_uids:
+            if t["id"] in own_ids:
+                t["id"] = state["next_id"]
+            state["next_id"] = max(state["next_id"], t["id"]) + 1
+            own_ids.add(t["id"])
+            state["trades"].append(t)
+    seen = {(x["event_time"], x["side"], x["action"]) for x in state["signals"]}
+    for x in fresh.get("signals", []):
+        if (x["event_time"], x["side"], x["action"]) not in seen:
+            state["signals"].append(x)
+    return state
+
+
 def run_cycle(store):
     """One worker pass. Never raises; errors are logged and stored in the state."""
     try:
@@ -221,6 +200,9 @@ def run_cycle(store):
         state["last_run_utc"] = pd.Timestamp.now(tz="UTC").isoformat()
         print("[worker] cycle failed:\n" + traceback.format_exc(), flush=True)
     try:
+        fresh = store.read("state")
+        if fresh:
+            state = _merge_foreign(state, fresh)
         store.write("state", state)
     except Exception as exc:                              # noqa: BLE001
         print(f"[worker] storage write failed: {exc}", flush=True)
@@ -234,6 +216,13 @@ def trades_df(state, mode="All"):
     df = pd.DataFrame(state.get("trades", []))
     if df.empty:
         return df
+    for col in ("exit_time", "exit_price", "exit_reason", "bars_held", "pnl_usd", "gross_pnl_usd", "fee_usd",
+                "future_high_excursion_pct", "future_low_excursion_pct", "trigger", "uid"):
+        if col not in df:
+            df[col] = None
+    for col in ("exit_price", "bars_held", "pnl_usd", "gross_pnl_usd", "fee_usd",
+                "future_high_excursion_pct", "future_low_excursion_pct"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in ("entry_time", "exit_time", "level_time", "event_open_time"):
         if col in df:
             df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
