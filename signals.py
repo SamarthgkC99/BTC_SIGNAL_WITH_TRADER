@@ -34,12 +34,15 @@ class Params:
     close_edge_pct: int = 70
     min_spacing_atr: float = 1.0
     forward_bars: int = 6
-    cooldown_bars: int = 6
+    cooldown_bars: int = 3
     confirm_closes: int = 3
+    legacy: bool = True          # True = first-version rules, False = improved rules
 
 
 def params_from(settings: dict) -> Params:
-    return Params(**{k: settings[k] for k in Params.__dataclass_fields__ if k in settings})
+    kw = {k: settings[k] for k in Params.__dataclass_fields__ if k in settings and k != "legacy"}
+    kw["legacy"] = str(settings.get("rules_mode", "Legacy")).startswith("Legacy")
+    return Params(**kw)
 
 
 def in_trade_window(ts_utc, days=(1, 2, 3), start_hm=(19, 0), end_hm=(23, 0)) -> bool:
@@ -97,7 +100,64 @@ def find_levels(df: pd.DataFrame, p: Params) -> list:
     return levels
 
 
+def _row(level_no, level, label, i, o, h, l, c, times, fb, n):
+    sig = PATTERN_SIDE.get(label, 0)
+    if i + 1 + fb <= n:
+        fwd = (c[i + fb] / c[i] - 1) * 100
+        hi = (h[i + 1:i + 1 + fb].max() / c[i] - 1) * 100
+        lo = (l[i + 1:i + 1 + fb].min() / c[i] - 1) * 100
+    else:
+        fwd = hi = lo = np.nan
+    return {
+        "level_id": level_no, "level_time": level["time"], "level_price": level["price"],
+        "origin_direction": level["direction"], "event_time": times.iloc[i],
+        "event_price": float(c[i]), "pattern": label, "signal_side": sig,
+        "forward_close_change_pct": fwd, "future_high_excursion_pct": hi, "future_low_excursion_pct": lo,
+        "fwd_return_dir_pct": fwd * sig if sig else np.nan,
+        "favorable_excursion_pct": (hi if sig > 0 else -lo) if sig else np.nan,
+        "adverse_excursion_pct": (lo if sig > 0 else -hi) if sig else np.nan,
+        "level_invalidated": label.startswith("Strong close"),
+    }
+
+
+def find_events_legacy(df: pd.DataFrame, levels: list, p: Params) -> pd.DataFrame:
+    """The first version's rules, unchanged: a level is only examined on candles that touch it;
+    rejection patterns are checked before breaks; a break needs open and close on opposite sides;
+    cooldown applies after every event; no de-duplication across levels."""
+    n = len(df)
+    o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
+    atr, body = df["atr"].to_numpy(float), df["body"].to_numpy(float)
+    cpos, upw, low_w = (df[k].to_numpy(float) for k in ("close_position", "upper_wick", "lower_wick"))
+    times, edge, rows = df["open_time"], p.close_edge_pct / 100.0, []
+    for level_no, level in enumerate(levels, start=1):
+        lvl, last_event_i = level["price"], -10 ** 9
+        for i in range(level["index"] + 1, n):
+            if np.isnan(atr[i]) or i <= last_event_i + p.cooldown_bars:
+                continue
+            if not (l[i] <= lvl <= h[i]):
+                continue
+            bd = max(body[i], 1e-12)
+            if low_w[i] / bd >= p.wick_body_ratio and c[i] > o[i] and cpos[i] >= 0.5:
+                label = "Bullish rejection (candidate)"
+            elif upw[i] / bd >= p.wick_body_ratio and c[i] < o[i] and cpos[i] <= 0.5:
+                label = "Bearish rejection (candidate)"
+            elif c[i] > lvl and o[i] < lvl and body[i] >= p.impulse_atr * atr[i] and cpos[i] >= edge:
+                label = "Strong close above level (candidate)"
+            elif c[i] < lvl and o[i] > lvl and body[i] >= p.impulse_atr * atr[i] and cpos[i] <= 1 - edge:
+                label = "Strong close below level (candidate)"
+            else:
+                label = "Touch / no defined pattern"
+            rows.append(_row(level_no, level, label, i, o, h, l, c, times, p.forward_bars, n))
+            last_event_i = i
+            if label.startswith("Strong close"):
+                level["invalidated"], level["invalidated_time"] = True, times.iloc[i]
+                break
+    return pd.DataFrame(rows)
+
+
 def find_events(df: pd.DataFrame, levels: list, p: Params) -> pd.DataFrame:
+    if p.legacy:
+        return find_events_legacy(df, levels, p)
     n = len(df)
     o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
     atr = df["atr"].to_numpy(float)
@@ -147,25 +207,7 @@ def find_events(df: pd.DataFrame, levels: list, p: Params) -> pd.DataFrame:
             if label is None:
                 continue
 
-            sig = PATTERN_SIDE.get(label, 0)
-            if i + 1 + fb <= n:
-                fut_h, fut_l, fut_c = h[i + 1:i + 1 + fb].max(), l[i + 1:i + 1 + fb].min(), c[i + fb]
-                fwd = (fut_c / c[i] - 1) * 100
-                hi = (fut_h / c[i] - 1) * 100
-                lo = (fut_l / c[i] - 1) * 100
-            else:
-                fwd = hi = lo = np.nan
-            rows.append({
-                "level_id": level_no, "level_time": level["time"], "level_price": lvl,
-                "origin_direction": level["direction"], "event_time": times.iloc[i],
-                "event_price": float(c[i]), "pattern": label, "signal_side": sig,
-                "forward_close_change_pct": fwd, "future_high_excursion_pct": hi,
-                "future_low_excursion_pct": lo,
-                "fwd_return_dir_pct": fwd * sig if sig else np.nan,
-                "favorable_excursion_pct": (hi if sig > 0 else -lo) if sig else np.nan,
-                "adverse_excursion_pct": (lo if sig > 0 else -hi) if sig else np.nan,
-                "level_invalidated": label.startswith("Strong close"),
-            })
+            rows.append(_row(level_no, level, label, i, o, h, l, c, times, fb, n))
             last_event_i = i
             if label.startswith("Strong close"):
                 level["invalidated"], level["invalidated_time"] = True, times.iloc[i]

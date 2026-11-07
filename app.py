@@ -22,7 +22,6 @@ st.markdown("""
   [data-testid="stMetricValue"] {font-size: 1.2rem;}
   [data-testid="stMetricLabel"] {font-size: 0.8rem;}
 }
-[data-testid="stDataFrame"] {overflow-x: auto;}
 </style>""", unsafe_allow_html=True)
 
 STORE = storemod.Store()
@@ -90,9 +89,7 @@ def next_window_start(now_utc):
 
 
 def show_df(df, compact_cols=None, compact=False):
-    if compact and compact_cols:
-        df = df[[c for c in compact_cols if c in df.columns]]
-    st.dataframe(df, width="stretch", hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)       # all columns always shown (scroll sideways)
 
 
 S = engine.merge_settings(read_key("settings")[0])
@@ -102,6 +99,16 @@ IVS = ["5m", "15m", "1h"]
 with st.sidebar:
     st.header("Study settings")
     compact = st.checkbox("Mobile / compact layout", value=False)
+    RULES = ["Legacy (first version)", "Improved (fixes)"]
+    if "cooldown_bars" not in st.session_state:
+        st.session_state["cooldown_bars"] = int(S["cooldown_bars"])
+
+    def _rules_changed():                      # switching rules also switches the cooldown to that version's default
+        st.session_state["cooldown_bars"] = 3 if st.session_state["rules_mode"].startswith("Legacy") else 6
+
+    rules_mode = st.selectbox("Event rules", RULES, index=RULES.index(S["rules_mode"]) if S["rules_mode"] in RULES else 0,
+                              key="rules_mode", on_change=_rules_changed)
+    legacy = rules_mode.startswith("Legacy")
     interval = st.selectbox("Candle timeframe", IVS, index=IVS.index(S["interval"]))
     bars = st.slider("Historical candles", 200, 1000, int(S["bars"]), 100)
     atr_period = st.slider("ATR period", 5, 50, int(S["atr_period"]))
@@ -111,17 +118,24 @@ with st.sidebar:
     min_spacing_atr = st.slider("Custom nearby-level filter: min spacing (ATR)", 0.25, 5.0,
                                 float(S["min_spacing_atr"]), 0.25)
     forward_bars = st.slider("Bars to observe after event", 3, 24, int(S["forward_bars"]))
-    cooldown_bars = st.slider("Cooldown bars before same level can fire again", 1, 12, int(S["cooldown_bars"]))
-    confirm_closes = st.slider("Closes beyond a level that invalidate it", 2, 8, int(S["confirm_closes"]))
+    cooldown_bars = st.slider("Cooldown bars before same level can fire again", 1, 12, key="cooldown_bars")
+    confirm_closes = st.slider("Closes beyond a level that invalidate it (Improved rules only)", 2, 8,
+                               int(S["confirm_closes"]), disabled=legacy)
     st.divider()
+    study_values = {}
     pch = providers.PROVIDER_CHOICES
     provider = st.selectbox("Price provider", pch, index=pch.index(S["provider"]) if S["provider"] in pch else 0)
     provider_fallback = st.checkbox("If it fails, fall back to the other providers",
                                     value=bool(S["provider_fallback"]))
-    if st.button("Use this provider for the trader too"):
+    study_values = dict(interval=interval, bars=bars, atr_period=atr_period, impulse_atr=impulse_atr,
+                        wick_body_ratio=wick_body_ratio, close_edge_pct=close_edge_pct,
+                        min_spacing_atr=min_spacing_atr, forward_bars=forward_bars, cooldown_bars=cooldown_bars,
+                        confirm_closes=confirm_closes, provider=provider, provider_fallback=provider_fallback,
+                        rules_mode=rules_mode)
+    if st.button("Apply these study settings + provider to the trader"):
         try:
-            set_settings(provider=provider, provider_fallback=provider_fallback)
-            st.success("Saved: the trader uses this provider from its next cycle.")
+            set_settings(**study_values)
+            st.success("Saved: the trader uses these settings from its next cycle.")
         except Exception as exc:                                # noqa: BLE001
             st.error(f"Could not save: {type(exc).__name__}")
     st.divider()
@@ -130,14 +144,9 @@ with st.sidebar:
     if auto_refresh:
         st_autorefresh(interval=30_000, key="btc_market_auto_refresh")
 
-study_values = dict(interval=interval, bars=bars, atr_period=atr_period, impulse_atr=impulse_atr,
-                    wick_body_ratio=wick_body_ratio, close_edge_pct=close_edge_pct,
-                    min_spacing_atr=min_spacing_atr, forward_bars=forward_bars,
-                    cooldown_bars=cooldown_bars, confirm_closes=confirm_closes,
-                    provider=provider, provider_fallback=provider_fallback)
 params = Params(atr_period=atr_period, impulse_atr=impulse_atr, wick_body_ratio=wick_body_ratio,
                 close_edge_pct=close_edge_pct, min_spacing_atr=min_spacing_atr, forward_bars=forward_bars,
-                cooldown_bars=cooldown_bars, confirm_closes=confirm_closes)
+                cooldown_bars=cooldown_bars, confirm_closes=confirm_closes, legacy=legacy)
 
 # ---------------------------------------------------------------- data + signals
 if refresh:
@@ -245,16 +254,16 @@ with tab_study:
         st.plotly_chart(fig, width="stretch")
 
         st.subheader("Method definition used in this prototype")
+        LEGACY_LINES = """- **Event rules: Legacy (first version).** A level is checked only on candles that touch it. Rejection patterns are checked before breaks. A strong break needs the candle to open on one side of the level and close on the other, with a big body near its edge, and ends the level. Cooldown applies after every event. No de-duplication across levels."""
+        IMPROVED_LINES = """- **Event rules: Improved.** Strong break is checked before rejection patterns. A level also ends after N consecutive closes beyond it, checked on every candle (touch or not). One event per candle: if several levels fire together, the defined pattern / most recent level is kept."""
         st.markdown("""
 - **Impulse candle:** body ≥ the selected multiple of ATR. **Momentum origin:** the impulse candle's open (placeholder definition).
 - **Nearby-level filter:** a candidate is kept only if it is at least the selected ATR distance from existing levels.
 - **Rejection:** wick/body ratio, candle direction and close location meet the thresholds.
-- **Strong break:** a candle that closes on the far side of the level with a large body near its edge. Checked **before** rejection patterns.
-- **Invalidation:** a strong break, or N consecutive closes beyond the level, ends the level (checked on every candle, touch or not).
-- **One event per candle:** if several levels fire on the same candle, the defined pattern / most recent level is kept. Cooldown defaults to the forward horizon so measurement windows don't overlap.
+{RULE_LINES}
 - **Direction-adjusted columns:** `fwd_return_dir_pct`, `favorable_excursion_pct`, `adverse_excursion_pct` flip the sign for SELL signals. The raw `future_*` columns are kept as-is.
 - **`trade` column:** BUY/SELL if the signal falls inside Tue–Thu 7–11pm IST, otherwise "signal only". `future_*` columns are measured after the signal, so they are analysis only, never an entry condition.
-""")
+""".replace("{RULE_LINES}", LEGACY_LINES if legacy else IMPROVED_LINES))
 
         st.subheader("Historical event study (IST)")
         if events.empty:
@@ -264,16 +273,19 @@ with tab_study:
             v["in_trade_window"] = v["event_close_time"].apply(in_trade_window)
             side_lbl = v["signal_side"].map(SIDE_LABEL)
             v["trade"] = np.where(v["signal_side"] == 0, "", np.where(v["in_trade_window"], side_lbl, "signal only"))
-            v["event_time_ist"] = ist_str(v["event_time"])
-            v["level_time_ist"] = ist_str(v["level_time"])
-            v = v.sort_values("event_time", ascending=False)
-            cols = ["event_time_ist", "pattern", "trade", "origin_direction", "level_invalidated",
-                    "event_price", "level_price", "level_id", "level_time_ist", "in_trade_window",
-                    "forward_close_change_pct", "future_high_excursion_pct", "future_low_excursion_pct",
-                    "fwd_return_dir_pct", "favorable_excursion_pct", "adverse_excursion_pct"]
-            view = v[cols].round(4)
-            show_df(view, ["event_time_ist", "pattern", "trade", "origin_direction", "level_invalidated",
-                           "future_high_excursion_pct", "fwd_return_dir_pct"], compact)
+            order = st.radio("Order", ["By level, then time (as in the first version)", "Newest first"],
+                             horizontal=True)
+            v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
+                 else v.sort_values("event_time", ascending=False))
+            v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
+            v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
+            cols = ["level_id", "level_time", "level_price", "origin_direction", "event_time", "event_price",
+                    "pattern", "forward_close_change_pct", "future_high_excursion_pct",
+                    "future_low_excursion_pct", "level_invalidated",
+                    "trade", "in_trade_window", "signal_side", "fwd_return_dir_pct",
+                    "favorable_excursion_pct", "adverse_excursion_pct"]
+            view = v[cols].round(5)
+            show_df(view)
             st.download_button("Download event-study CSV (IST)", data=view.to_csv(index=False).encode("utf-8"),
                                file_name="btc_momentum_level_events_ist.csv", mime="text/csv")
             st.subheader("Descriptive outcomes by observed pattern")
@@ -417,7 +429,7 @@ with tab_act:
     if sg.empty:
         st.caption("No signals recorded by the worker yet.")
     else:
-        sg["event_time"] = pd.to_datetime(sg["event_time"], utc=True)
+        sg["event_time"] = pd.to_datetime(sg["event_time"], utc=True, format="ISO8601")
         sg["time_ist"] = ist_str(sg["event_time"])
         sg = sg.sort_values("event_time", ascending=False)
         show_df(sg[["time_ist", "side", "pattern", "price", "origin_direction", "level_invalidated",

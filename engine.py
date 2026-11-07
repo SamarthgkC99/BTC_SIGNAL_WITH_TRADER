@@ -24,12 +24,17 @@ DEFAULT_SETTINGS = dict(
     skip_invalidated_events=False, max_signal_age_bars=2,
     provider="Auto (fallback chain)", provider_fallback=True,
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
-    close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=6, confirm_closes=3,
+    close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=3, confirm_closes=3,
+    rules_mode="Legacy (first version)",
 )
 
 
 def merge_settings(saved):
-    return {**DEFAULT_SETTINGS, **(saved or {})}
+    saved = dict(saved or {})
+    if saved and "rules_mode" not in saved:        # settings saved before the rules switch existed:
+        saved.pop("cooldown_bars", None)           # go back to the first version's cooldown (3)
+        saved.pop("confirm_closes", None)
+    return {**DEFAULT_SETTINGS, **saved}
 
 
 def new_state(settings):
@@ -225,7 +230,7 @@ def trades_df(state, mode="All"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in ("entry_time", "exit_time", "level_time", "event_open_time"):
         if col in df:
-            df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
+            df[col] = pd.to_datetime(df[col], utc=True, errors="coerce", format="ISO8601")
     return df if mode == "All" else df[df["mode"] == mode].reset_index(drop=True)
 
 

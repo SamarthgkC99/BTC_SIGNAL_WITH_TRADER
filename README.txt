@@ -31,7 +31,10 @@ Test controls (Live P&L tab)
 Price provider (sidebar)
   Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).
   A named provider is tried first; tick "fall back" to let the others take over if it fails.
-  'Use this provider for the trader too' saves the choice for the background worker.
+  'Apply these study settings + provider to the trader' saves them for the background worker.
+
+Event rules (sidebar)
+  Legacy (first version, default, cooldown 3) or Improved (stricter invalidation, one event per candle).
 
 Environment variables (set on Render, never in code)
   APP_PASSWORD               login password for the page
