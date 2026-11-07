@@ -95,6 +95,29 @@ class Store:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
 
+    def push(self, key, obj):
+        """Append an item to a queue (atomic RPUSH on Redis)."""
+        url, token, _ = get_creds()
+        if url:
+            _redis(url, token, "RPUSH", PREFIX + key, json.dumps(obj, default=str))
+            return
+        items = self.read(key) or []
+        items.append(obj)
+        self.write(key, items)
+
+    def pop_all(self, key):
+        """Return and remove everything currently queued (only the items read are removed)."""
+        url, token, _ = get_creds()
+        if url:
+            raw = _redis(url, token, "LRANGE", PREFIX + key, "0", "-1") or []
+            if raw:
+                _redis(url, token, "LTRIM", PREFIX + key, str(len(raw)), "-1")
+            return [json.loads(x) for x in raw]
+        items = self.read(key) or []
+        if items:
+            self.write(key, [])
+        return items
+
     def write(self, key, obj):
         payload = json.dumps(obj, default=str)
         url, token, _ = get_creds()

@@ -101,22 +101,41 @@ def _kraken(interval, limit):
     return _finish(df)
 
 
-def fetch_candles(interval: str, limit: int, allow_usd: bool = True):
-    """Return (df, source_label, quote_currency, errors). Raises RuntimeError if all fail."""
-    errors = []
-    attempts = [(f"Binance Spot ({b.split('//')[1]})", "USDT", lambda b=b: _binance(b, interval, limit))
-                for b in BINANCE_BASES]
-    attempts += [
-        ("Bybit Spot", "USDT", lambda: _bybit(interval, limit)),
-        ("OKX Spot", "USDT", lambda: _okx(interval, limit)),
-        ("KuCoin Spot", "USDT", lambda: _kucoin(interval, limit)),
-    ]
-    if allow_usd:
-        attempts += [
-            ("Coinbase Exchange", "USD", lambda: _coinbase(interval, limit)),
-            ("Kraken Spot", "USD", lambda: _kraken(interval, limit)),
-        ]
-    skip_binance = False
+PROVIDER_CHOICES = ["Auto (fallback chain)", "Binance", "Bybit", "OKX", "KuCoin", "Coinbase (USD)", "Kraken (USD)"]
+USD_PROVIDERS = {"Coinbase (USD)", "Kraken (USD)"}
+
+
+def _groups(interval, limit):
+    return {
+        "Binance": [(f"Binance Spot ({b.split('//')[1]})", "USDT", lambda b=b: _binance(b, interval, limit))
+                    for b in BINANCE_BASES],
+        "Bybit": [("Bybit Spot", "USDT", lambda: _bybit(interval, limit))],
+        "OKX": [("OKX Spot", "USDT", lambda: _okx(interval, limit))],
+        "KuCoin": [("KuCoin Spot", "USDT", lambda: _kucoin(interval, limit))],
+        "Coinbase (USD)": [("Coinbase Exchange", "USD", lambda: _coinbase(interval, limit))],
+        "Kraken (USD)": [("Kraken Spot", "USD", lambda: _kraken(interval, limit))],
+    }
+
+
+def fetch_candles(interval: str, limit: int, allow_usd: bool = True,
+                  provider: str = "Auto (fallback chain)", fallback: bool = True):
+    """Return (df, source_label, quote_currency, errors). Raises RuntimeError if all fail.
+
+    provider: "Auto (fallback chain)" or one name from PROVIDER_CHOICES. A named provider is
+    tried first; the rest follow only if `fallback` is True. USD providers are used as a
+    fallback only when `allow_usd` is True, but a USD provider chosen by name is always tried.
+    """
+    groups = _groups(interval, limit)
+    if provider in groups:
+        chain = [provider] + ([g for g in groups if g != provider] if fallback else [])
+    else:
+        chain = list(groups)
+    attempts = []
+    for name in chain:
+        if name in USD_PROVIDERS and not allow_usd and name != provider:
+            continue
+        attempts += groups[name]
+    errors, skip_binance = [], False
     for label, quote, fn in attempts:
         if skip_binance and label.startswith("Binance"):
             continue
@@ -130,4 +149,4 @@ def fetch_candles(interval: str, limit: int, allow_usd: bool = True):
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if label.startswith("Binance") and status in (403, 451):
                 skip_binance = True                               # region block applies to every Binance host
-    raise RuntimeError("All public candle providers failed. " + " | ".join(errors[-10:]))
+    raise RuntimeError("All selected public candle providers failed. " + " | ".join(errors[-10:]))

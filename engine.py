@@ -21,6 +21,7 @@ DEFAULT_SETTINGS = dict(
     initial_balance=5000.0, lot_usd=20.0, tp_pct=0.5, sl_pct=0.5, fee_pct=0.0, max_open=3,
     test_mode=True, allow_usd_fallback=False, allowed_origins="Both",
     skip_invalidated_events=False, max_signal_age_bars=2,
+    provider="Auto (fallback chain)", provider_fallback=True,
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
     close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=6, confirm_closes=3,
 )
@@ -74,52 +75,109 @@ def _process_exits(state, closed, iv):
             break
 
 
+def usd_ok(s, quote):
+    return quote == "USDT" or bool(s.get("allow_usd_fallback")) or s.get("provider") in providers.USD_PROVIDERS
+
+
+def block_reason(state, s, origin, invalidated, level_time_iso, quote):
+    """Trader rules shared by automatic and manual test entries (the timing window is checked elsewhere)."""
+    open_trades = [t for t in state["trades"] if t["status"] == "OPEN"]
+    if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
+        return f"origin filter ({s['allowed_origins']} only)"
+    if s["skip_invalidated_events"] and invalidated:
+        return "level-invalidated filter"
+    if len(open_trades) >= s["max_open"]:
+        return "max open trades reached"
+    if any(t["level_time"] == level_time_iso for t in open_trades):
+        return "level already has an open trade"
+    if not usd_ok(s, quote):
+        return "USD fallback data not allowed"
+    return None
+
+
+def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso, level_price,
+                event_open_time_iso, entry_time_iso, entry, source, mode, trigger="auto"):
+    tp_f, sl_f = s["tp_pct"] / 100.0, s["sl_pct"] / 100.0
+    return {
+        "id": trade_id, "status": "OPEN", "mode": mode, "trigger": trigger,
+        "side": SIDE_LABEL[side], "side_num": side, "pattern": pattern,
+        "origin_direction": origin, "level_invalidated": bool(invalidated),
+        "level_time": level_time_iso, "level_price": float(level_price),
+        "event_open_time": event_open_time_iso, "entry_time": entry_time_iso,
+        "entry_price": float(entry), "lot_usd": float(s["lot_usd"]), "qty": s["lot_usd"] / entry,
+        "tp": entry * (1 + side * tp_f), "sl": entry * (1 - side * sl_f),
+        "horizon": int(s["forward_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
+    }
+
+
 def _consider(state, s, ev, latest_open, iv, source, quote):
     side = int(ev["signal_side"])
     close_ts = ev["event_time"] + iv
     in_win = in_trade_window(close_ts)
+    level_iso = pd.Timestamp(ev["level_time"]).isoformat()
     sig = {
         "event_time": ev["event_time"].isoformat(), "pattern": ev["pattern"], "side": SIDE_LABEL[side],
         "price": float(ev["event_price"]), "origin_direction": ev["origin_direction"],
         "level_invalidated": bool(ev["level_invalidated"]), "in_trade_window": bool(in_win),
         "source": source, "action": "",
     }
-    open_trades = [t for t in state["trades"] if t["status"] == "OPEN"]
     age = (latest_open - ev["event_time"]) / iv
-    reason = None
     if age > s["max_signal_age_bars"]:
         reason = "stale signal (worker was behind)"
     elif not in_win and not s["test_mode"]:
         reason = "outside trade window"
-    elif s["allowed_origins"] != "Both" and ev["origin_direction"] != s["allowed_origins"]:
-        reason = f"origin filter ({s['allowed_origins']} only)"
-    elif s["skip_invalidated_events"] and ev["level_invalidated"]:
-        reason = "level-invalidated filter"
-    elif len(open_trades) >= s["max_open"]:
-        reason = "max open trades reached"
-    elif any(t["level_time"] == pd.Timestamp(ev["level_time"]).isoformat() for t in open_trades):
-        reason = "level already has an open trade"
-    elif quote != "USDT" and not s["allow_usd_fallback"]:
-        reason = "USD fallback data not allowed"
+    else:
+        reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote)
     if reason:
         sig["action"] = "SKIPPED: " + reason
     else:
-        entry = float(ev["event_price"])
-        qty = s["lot_usd"] / entry
-        tp_f, sl_f = s["tp_pct"] / 100.0, s["sl_pct"] / 100.0
-        state["trades"].append({
-            "id": state["next_id"], "status": "OPEN", "mode": "WINDOW" if in_win else "TEST",
-            "side": SIDE_LABEL[side], "side_num": side, "pattern": ev["pattern"],
-            "origin_direction": ev["origin_direction"], "level_invalidated": bool(ev["level_invalidated"]),
-            "level_time": pd.Timestamp(ev["level_time"]).isoformat(), "level_price": float(ev["level_price"]),
-            "event_open_time": ev["event_time"].isoformat(), "entry_time": close_ts.isoformat(),
-            "entry_price": entry, "lot_usd": float(s["lot_usd"]), "qty": qty,
-            "tp": entry * (1 + side * tp_f), "sl": entry * (1 - side * sl_f),
-            "horizon": int(s["forward_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
-        })
+        state["trades"].append(build_trade(
+            state["next_id"], s, side, ev["pattern"], ev["origin_direction"], ev["level_invalidated"],
+            level_iso, ev["level_price"], ev["event_time"].isoformat(), close_ts.isoformat(),
+            float(ev["event_price"]), source, "WINDOW" if in_win else "TEST"))
         state["next_id"] += 1
         sig["action"] = "TRADED"
     state["signals"].append(sig)
+
+
+def absorb_queue(store):
+    """Move manually queued test trades (from the page's button) into the paper account."""
+    try:
+        items = store.pop_all("queue")
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[worker] queue read failed: {exc}", flush=True)
+        return 0
+    if not items:
+        return 0
+    try:
+        s = merge_settings(store.read("settings"))
+        state = store.read("state") or new_state(s)
+        for it in items:
+            reason = block_reason(state, s, it["origin_direction"], it["level_invalidated"],
+                                  it["level_time"], it.get("quote", "USDT"))
+            sig = {"event_time": it["entry_time"], "pattern": it["pattern"], "side": it["side"],
+                   "price": it["entry_price"], "origin_direction": it["origin_direction"],
+                   "level_invalidated": it["level_invalidated"], "in_trade_window": False,
+                   "source": it["source"], "action": ""}
+            if reason:
+                sig["action"] = "SKIPPED (manual test): " + reason
+            else:
+                it.pop("quote", None)
+                it["id"] = state["next_id"]
+                state["next_id"] += 1
+                state["trades"].append(it)
+                sig["action"] = "TRADED (manual test)"
+            state["signals"].append(sig)
+        store.write("state", state)
+        return len(items)
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[worker] queue absorb failed, re-queueing: {exc}", flush=True)
+        for it in items:
+            try:
+                store.push("queue", it)
+            except Exception:                                 # noqa: BLE001
+                pass
+        return 0
 
 
 def process(state, s, closed, events, source, quote, now=None):
@@ -153,7 +211,8 @@ def run_cycle(store):
         print(f"[worker] storage read failed: {exc}", flush=True)
         return False
     try:
-        df, source, quote, _ = providers.fetch_candles(s["interval"], int(s["bars"]), s["allow_usd_fallback"])
+        df, source, quote, _ = providers.fetch_candles(s["interval"], int(s["bars"]), s["allow_usd_fallback"],
+                                                      s["provider"], s["provider_fallback"])
         closed, _ = signals.closed_only(df, s["interval"])
         _, _, events = signals.run_study(closed, signals.params_from(s), s["interval"])
         state = process(state, s, closed, events, source, quote)

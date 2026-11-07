@@ -60,8 +60,16 @@ def read_key(key):
 
 
 @st.cache_data(ttl=20, show_spinner=False)
-def fetch_klines(interval: str, limit: int):
-    return providers.fetch_candles(interval, limit, allow_usd=True)
+def fetch_klines(interval: str, limit: int, provider: str, fallback: bool):
+    return providers.fetch_candles(interval, limit, allow_usd=True, provider=provider, fallback=fallback)
+
+
+def set_settings(**changes):
+    """Merge changes into the saved settings (used by the quick buttons)."""
+    current = engine.merge_settings(STORE.read("settings"))
+    current.update(changes)
+    STORE.write("settings", current)
+    read_key.clear()
 
 
 def ist_str(series):
@@ -105,6 +113,18 @@ with st.sidebar:
     forward_bars = st.slider("Bars to observe after event", 3, 24, int(S["forward_bars"]))
     cooldown_bars = st.slider("Cooldown bars before same level can fire again", 1, 12, int(S["cooldown_bars"]))
     confirm_closes = st.slider("Closes beyond a level that invalidate it", 2, 8, int(S["confirm_closes"]))
+    st.divider()
+    pch = providers.PROVIDER_CHOICES
+    provider = st.selectbox("Price provider", pch, index=pch.index(S["provider"]) if S["provider"] in pch else 0)
+    provider_fallback = st.checkbox("If it fails, fall back to the other providers",
+                                    value=bool(S["provider_fallback"]))
+    if st.button("Use this provider for the trader too"):
+        try:
+            set_settings(provider=provider, provider_fallback=provider_fallback)
+            st.success("Saved: the trader uses this provider from its next cycle.")
+        except Exception as exc:                                # noqa: BLE001
+            st.error(f"Could not save: {type(exc).__name__}")
+    st.divider()
     auto_refresh = st.checkbox("Auto-refresh every 30 seconds", value=True)
     refresh = st.button("Fetch fresh data now", type="primary")
     if auto_refresh:
@@ -113,7 +133,8 @@ with st.sidebar:
 study_values = dict(interval=interval, bars=bars, atr_period=atr_period, impulse_atr=impulse_atr,
                     wick_body_ratio=wick_body_ratio, close_edge_pct=close_edge_pct,
                     min_spacing_atr=min_spacing_atr, forward_bars=forward_bars,
-                    cooldown_bars=cooldown_bars, confirm_closes=confirm_closes)
+                    cooldown_bars=cooldown_bars, confirm_closes=confirm_closes,
+                    provider=provider, provider_fallback=provider_fallback)
 params = Params(atr_period=atr_period, impulse_atr=impulse_atr, wick_body_ratio=wick_body_ratio,
                 close_edge_pct=close_edge_pct, min_spacing_atr=min_spacing_atr, forward_bars=forward_bars,
                 cooldown_bars=cooldown_bars, confirm_closes=confirm_closes)
@@ -126,7 +147,7 @@ if refresh:
 data_ok, fetch_error = True, None
 try:
     with st.spinner("Loading public BTC candles with API fallback…"):
-        df, data_source, quote_currency, provider_errors = fetch_klines(interval, bars)
+        df, data_source, quote_currency, provider_errors = fetch_klines(interval, bars, provider, provider_fallback)
 except Exception as exc:                                        # noqa: BLE001
     data_ok, fetch_error = False, str(exc)
 
@@ -187,6 +208,8 @@ with tab_study:
                 f"latest {live['close']:,.2f} {quote_currency}. Provisional until the interval ends.")
         st.caption(f"Active data source: {data_source} · Quote currency: {quote_currency} · "
                    f"Candles loaded: {len(df)} · Auto-refresh: {'on (30s)' if auto_refresh else 'off'}")
+        if provider != "Auto (fallback chain)" and not data_source.startswith(provider.split()[0]):
+            st.info(f"Your chosen provider ({provider}) failed, so data comes from {data_source}.")
         if quote_currency != "USDT":
             st.warning("USD fallback data is being displayed. The demo trader pauses on USD data unless you allow it in Settings.")
         if provider_errors:
@@ -280,6 +303,53 @@ with tab_pnl:
                f" · last worker run: {state.get('last_run_utc') or 'never'} · data: {state.get('last_source') or '-'}")
     if state.get("last_error"):
         st.warning(f"Worker's last error: {state['last_error']}")
+    st.subheader("Test controls")
+    tc1, tc2 = st.columns(2)
+    if S["test_mode"]:
+        if tc1.button("⏹ Stop test mode (enforce the window)"):
+            try:
+                set_settings(test_mode=False)
+                st.rerun()
+            except Exception as exc:                            # noqa: BLE001
+                st.error(f"Could not save: {type(exc).__name__}")
+    else:
+        if tc1.button("▶ Start test mode (bypass the window)", type="primary"):
+            try:
+                set_settings(test_mode=True)
+                st.rerun()
+            except Exception as exc:                            # noqa: BLE001
+                st.error(f"Could not save: {type(exc).__name__}")
+    if tc2.button("➕ Test trade now (follows the current signal)"):
+        if not data_ok or live_price is None:
+            st.error("No live data available right now.")
+        else:
+            dsig = events[events["signal_side"] != 0] if not events.empty else events
+            if dsig.empty:
+                st.warning("There is no directional signal in the loaded sample to follow.")
+            else:
+                last = dsig.iloc[-1]
+                side = int(last["signal_side"])
+                level_iso = last["level_time"].isoformat()
+                why = engine.block_reason(state, S, last["origin_direction"], bool(last["level_invalidated"]),
+                                          level_iso, quote_currency)
+                if why:
+                    st.warning(f"Blocked by your trader rules: {why}. (Only the timing window is bypassed in a test.)")
+                else:
+                    item = engine.build_trade(
+                        0, S, side, last["pattern"], last["origin_direction"], bool(last["level_invalidated"]),
+                        level_iso, last["level_price"], chart_df["open_time"].iloc[-1].isoformat(),
+                        pd.Timestamp.now(tz="UTC").isoformat(), live_price, data_source, "TEST", "manual")
+                    item["quote"] = quote_currency
+                    try:
+                        STORE.push("queue", item)
+                        ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
+                        st.success(f"Queued TEST {SIDE_LABEL[side]} at {live_price:,.2f} following the "
+                                   f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago. "
+                                   "It appears in your trades within about 30 seconds.")
+                    except Exception as exc:                    # noqa: BLE001
+                        st.error(f"Could not queue the test trade: {type(exc).__name__}")
+    st.caption("Test trades use your Demo trader settings (lot, TP/SL, fee, filters, max open trades). "
+               "Only the Tue–Thu 7–11pm IST window is bypassed.")
     mode = st.radio("Show", ["All", "WINDOW", "TEST"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
@@ -322,7 +392,7 @@ with tab_act:
         td = td.sort_values("id", ascending=False).copy()
         td["entry_ist"] = ist_str(td["entry_time"])
         td["exit_ist"] = ist_str(td["exit_time"]) if td["exit_time"].notna().any() else ""
-        cols = ["id", "mode", "status", "side", "pattern", "origin_direction", "level_invalidated", "entry_ist",
+        cols = ["id", "mode", "trigger", "status", "side", "pattern", "origin_direction", "level_invalidated", "entry_ist",
                 "entry_price", "exit_ist", "exit_price", "exit_reason", "bars_held", "pnl_usd",
                 "future_high_excursion_pct", "source"]
         out = td[[c for c in cols if c in td.columns]].round(4)
@@ -380,8 +450,7 @@ with tab_set:
         sl_pct = c2.number_input("Stop-loss (%)", 0.05, 10.0, float(S["sl_pct"]), 0.05)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
         max_open = c2.number_input("Max open trades", 1, 20, int(S["max_open"]), 1)
-        test_mode = st.checkbox("Test mode: also trade signals outside Tue–Thu 7–11pm IST (tagged TEST)",
-                                value=bool(S["test_mode"]))
+        st.caption("Test mode start/stop is on the Live P&L tab.")
         origins = ["Both", "Bullish", "Bearish"]
         allowed_origins = st.selectbox("Only trade levels with origin direction", origins,
                                        index=origins.index(S["allowed_origins"]))
@@ -393,7 +462,7 @@ with tab_set:
         saved = st.form_submit_button("Save settings")
     if saved:
         new = dict(S, lot_usd=lot_usd, initial_balance=initial_balance, tp_pct=tp_pct, sl_pct=sl_pct,
-                   fee_pct=fee_pct, max_open=int(max_open), test_mode=test_mode, allowed_origins=allowed_origins,
+                   fee_pct=fee_pct, max_open=int(max_open), allowed_origins=allowed_origins,
                    skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd)
         if use_sidebar:
             new.update(study_values)
@@ -404,7 +473,7 @@ with tab_set:
         except Exception as exc:                                # noqa: BLE001
             st.error(f"Could not save settings: {type(exc).__name__}")
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
-               f"horizon {S['forward_bars']} bars · TP/SL {S['tp_pct']}% / {S['sl_pct']}% · lot ${S['lot_usd']:,.0f}")
+               f"provider {S['provider']} · horizon {S['forward_bars']} bars · TP/SL {S['tp_pct']}% / {S['sl_pct']}% · lot ${S['lot_usd']:,.0f}")
 
     with st.expander("Reset demo account"):
         sure = st.checkbox("I understand this deletes all trades and restarts from the initial balance")

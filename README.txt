@@ -21,6 +21,17 @@ Trading rules (all editable in Settings)
   future_high_excursion_pct is measured AFTER the signal, so it is analysis only,
   never an entry condition.
 
+Test controls (Live P&L tab)
+  Start/Stop test mode: bypasses ONLY the Tue-Thu 7-11pm IST window (trades tagged TEST).
+  Test trade now: opens one TEST trade in the direction of the latest signal at the live price.
+  It follows every trader rule (lot, TP/SL, fee, origin filter, skip-invalidated filter, max open
+  trades, one open trade per level, USD-data rule). The background worker picks it up within ~30 s.
+
+Price provider (sidebar)
+  Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).
+  A named provider is tried first; tick "fall back" to let the others take over if it fails.
+  'Use this provider for the trader too' saves the choice for the background worker.
+
 Environment variables (set on Render, never in code)
   APP_PASSWORD               login password for the page
   UPSTASH_REDIS_REST_URL     from the Upstash console (REST API section)

@@ -43,8 +43,11 @@ def pinger():
 
 def worker():
     """Run one cycle right after each candle closes (plus once at start-up)."""
-    last_done, retries = None, 0
+    last_done, retries, last_queue = None, 0, 0.0
     while True:
+        if time.time() - last_queue >= 30:                        # manual test trades from the page's button
+            last_queue = time.time()
+            engine.absorb_queue(STORE)
         try:
             settings = engine.merge_settings(STORE.read("settings"))
             minutes = INTERVAL_MIN[settings["interval"]]
