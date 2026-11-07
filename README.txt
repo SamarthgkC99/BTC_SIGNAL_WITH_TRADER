@@ -34,7 +34,7 @@ Price provider (sidebar)
   'Apply these study settings + provider to the trader' saves them for the background worker.
 
 Event rules (sidebar)
-  Legacy (first version, default, cooldown 3) or Improved (stricter invalidation, one event per candle).
+  Improved (default: stricter invalidation, one event per candle, cooldown 6) or Legacy (first version, cooldown 3).
 
 Environment variables (set on Render, never in code)
   APP_PASSWORD               login password for the page

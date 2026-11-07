@@ -387,6 +387,59 @@ with tab_pnl:
     res = st.session_state.get("test_result")
     if res:                                                    # stays visible across the 30-second auto-refresh
         {"success": st.success, "warning": st.warning, "error": st.error}[res[0]](f"{res[2]} IST · {res[1]}")
+    with st.expander("🔎 Why isn't it trading? (live diagnostics)"):
+        rows, now_u = [], pd.Timestamp.now(tz="UTC")
+        lr, iv_min = state.get("last_run_utc"), INTERVAL_MIN[S["interval"]]
+        if lr:
+            age_min = (now_u - pd.Timestamp(lr)).total_seconds() / 60
+            fine = age_min <= iv_min * 2 + 2
+            rows.append(("Background trader running", "✅" if fine else "❌",
+                         f"last cycle {age_min:.0f} min ago" + ("" if fine else
+                         " — too long: the Render service may be asleep or crashed. Check the Render logs and your pinger.")))
+        else:
+            rows.append(("Background trader running", "❌", "no cycle recorded yet"))
+        if state.get("last_error"):
+            rows.append(("Trader's last error", "❌", state["last_error"]))
+        saved_cfg = read_key("settings")[0]
+        rows.append(("Settings loaded from storage", "✅" if saved_cfg else "⚠️",
+                     "saved settings found" if saved_cfg else "nothing saved yet: defaults are in use"))
+        win_now = in_trade_window(now_u)
+        rows.append(("Allowed to trade right now", "✅" if (win_now or S["test_mode"]) else "❌",
+                     f"window {'OPEN' if win_now else 'closed'} · test mode {'ON' if S['test_mode'] else 'OFF'}"))
+        rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "
+                     f"TP/SL {S['tp_pct']}%/{S['sl_pct']}% · lot ${S['lot_usd']:,.0f}"))
+        rows.append(("Rules THIS PAGE uses", "✅" if rules_mode == S["rules_mode"] else "⚠️",
+                     f"{rules_mode} · cooldown {cooldown_bars}" + ("" if rules_mode == S["rules_mode"] else
+                     " — differs from the trader; press 'Apply these study settings' in the sidebar")))
+        dd = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
+        if dd.empty:
+            rows.append(("Latest directional signal", "❌", "none in the loaded sample, so there is nothing to follow"))
+        else:
+            ls = dd.iloc[-1]
+            ago_c = int((closed["open_time"].iloc[-1] - ls["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
+            rows.append(("Latest directional signal", "ℹ️",
+                         f"{SIDE_LABEL[int(ls['signal_side'])]} · {ls['pattern'].replace(' (candidate)', '')} · "
+                         f"{ls['event_time'].tz_convert(IST).strftime('%a %d %b %H:%M IST')} · {ago_c} candle(s) ago · "
+                         f"origin {ls['origin_direction']} · level invalidated: {bool(ls['level_invalidated'])}"))
+            opens = [t for t in state.get("trades", []) if t["status"] == "OPEN"]
+            lv = ls["level_time"].isoformat()
+            checks = [
+                ("Origin filter", S["allowed_origins"] == "Both" or ls["origin_direction"] == S["allowed_origins"],
+                 f"set to '{S['allowed_origins']}'"),
+                ("'Skip events that invalidate their level'", not (S["skip_invalidated_events"] and bool(ls["level_invalidated"])),
+                 f"{'ticked' if S['skip_invalidated_events'] else 'not ticked'}; this signal {'does' if ls['level_invalidated'] else 'does not'} end its level"),
+                ("Max open trades", len(opens) < S["max_open"], f"{len(opens)} open of max {S['max_open']}"),
+                ("One open trade per level", not any(t["level_time"] == lv for t in opens),
+                 "that level already has an open trade" if any(t["level_time"] == lv for t in opens) else "free"),
+                ("Data currency", engine.usd_ok(S, quote_currency), f"data is {quote_currency}"),
+            ]
+            for name, passed, detail in checks:
+                rows.append((f"Rule: {name}", "✅" if passed else "❌ BLOCKS", detail))
+        recent = state.get("signals", [])[-4:][::-1]
+        for x in recent:
+            rows.append(("Trader's recent decision", "ℹ️", f"{x['side']} {x['pattern'].replace(' (candidate)', '')} → {x['action']}"))
+        st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
+        st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason Test trade now (and the automatic trader) skips the newest signal.")
     st.caption("A test trade is placed instantly when the window is open or test mode is started. It uses your Demo "
                "trader settings (lot, TP/SL, fee, filters, max open trades).")
     mode = st.radio("Show", ["All", "WINDOW", "TEST"], horizontal=True)

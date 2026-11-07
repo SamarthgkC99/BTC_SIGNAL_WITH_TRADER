@@ -24,15 +24,15 @@ DEFAULT_SETTINGS = dict(
     skip_invalidated_events=False, max_signal_age_bars=2,
     provider="Auto (fallback chain)", provider_fallback=True,
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
-    close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=3, confirm_closes=3,
-    rules_mode="Legacy (first version)",
+    close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=6, confirm_closes=3,
+    rules_mode="Improved (fixes)",
 )
 
 
 def merge_settings(saved):
     saved = dict(saved or {})
     if saved and "rules_mode" not in saved:        # settings saved before the rules switch existed:
-        saved.pop("cooldown_bars", None)           # go back to the first version's cooldown (3)
+        saved.pop("cooldown_bars", None)           # use the current defaults for the cooldown/confirm settings
         saved.pop("confirm_closes", None)
     return {**DEFAULT_SETTINGS, **saved}
 
