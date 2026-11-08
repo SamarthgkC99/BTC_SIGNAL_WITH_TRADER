@@ -1,10 +1,13 @@
+import hashlib
 import hmac
 import os
+import time
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 import engine
@@ -28,6 +31,26 @@ STORE = storemod.Store()
 
 
 # ---------------------------------------------------------------- login gate
+COOKIE, REMEMBER_DAYS = "btc_auth", 7
+
+
+def _token(pw, exp):
+    return f"{exp}.{hmac.new(pw.encode(), str(exp).encode(), hashlib.sha256).hexdigest()}"
+
+
+def _token_ok(pw, tok):
+    try:
+        exp, sig = tok.split(".", 1)
+        return int(exp) > time.time() and hmac.compare_digest(sig, _token(pw, exp).split(".", 1)[1])
+    except Exception:                                           # noqa: BLE001
+        return False
+
+
+def _cookie_js(value, max_age):
+    return ("<script>try{window.parent.document.cookie='%s=%s; max-age=%d; path=/; SameSite=Lax; Secure';}"
+            "catch(e){}</script>" % (COOKIE, value, max_age))
+
+
 def gate():
     pw = os.environ.get("APP_PASSWORD")
     if not pw:
@@ -36,12 +59,23 @@ def gate():
         return
     if st.session_state.get("authed"):
         return
-    st.title("BTC Momentum-Level Study")
-    entered = st.text_input("Password", type="password")
+    try:                                                        # a valid "remember me" cookie skips the login
+        if _token_ok(pw, st.context.cookies.get(COOKIE, "")):
+            st.session_state["authed"] = True
+            return
+    except Exception:                                           # noqa: BLE001
+        pass
+    box = st.empty()
+    with box.container():
+        st.title("BTC Momentum-Level Study")
+        entered = st.text_input("Password", type="password")
+        st.caption(f"After you log in, this browser is remembered for {REMEMBER_DAYS} days.")
     if entered and hmac.compare_digest(entered.encode(), pw.encode()):
         st.session_state["authed"] = True
-        st.rerun()
-    elif entered:
+        box.empty()
+        components.html(_cookie_js(_token(pw, int(time.time()) + REMEMBER_DAYS * 86400), REMEMBER_DAYS * 86400), height=0)
+        return
+    if entered:
         st.error("Wrong password.")
     st.stop()
 
@@ -98,6 +132,11 @@ S = engine.merge_settings(read_key("settings")[0])
 IVS = ["5m", "15m", "1h"]
 with st.sidebar:
     st.header("Study settings")
+    if os.environ.get("APP_PASSWORD") and st.button("Log out of this browser"):
+        components.html(_cookie_js("", 0), height=0)
+        st.session_state["authed"] = False
+        st.success("Logged out. Reload the page to log in again.")
+        st.stop()
     compact = st.checkbox("Mobile / compact layout", value=False)
     RULES = ["Legacy (first version)", "Improved (fixes)"]
     if "cooldown_bars" not in st.session_state:
@@ -193,14 +232,19 @@ with tab_study:
             label = SIDE_LABEL[int(last["signal_side"])]
             when = last["event_time"].tz_convert(IST).strftime("%a %d %b %H:%M IST")
             took = in_trade_window(last["event_close_time"])
-            msg = (f"**Latest signal: {label}** · {last['pattern'].replace(' (candidate)', '')} · "
-                   f"candle {when} · {ago} candle(s) ago · price {last['event_price']:,.2f} {quote_currency} · "
-                   f"{'inside' if took else 'outside'} the Tue–Thu 7–11pm IST trade window")
+            what = {"Strong close above level (candidate)": "closed strongly above",
+                    "Strong close below level (candidate)": "closed strongly below",
+                    "Bullish rejection (candidate)": "bounced up from",
+                    "Bearish rejection (candidate)": "was rejected down from"}[last["pattern"]]
+            msg = (f"**Latest signal: {label}** — price {what} a **{last['origin_direction']}-origin** level at "
+                   f"{last['level_price']:,.2f} (level {int(last['level_id'])}). Candle {when} · {ago} candle(s) ago · "
+                   f"price {last['event_price']:,.2f} {quote_currency} · "
+                   f"{'inside' if took else 'outside'} the Tue–Thu 7–11pm IST window")
             (st.success if ago <= 3 else st.info)(msg)
         else:
             st.info("No directional signal in the loaded sample yet.")
         st.caption(f"Trade window right now: {'OPEN' if win_open else 'closed'} · signals are shown at any day/time; "
-                   "the demo trader only trades inside the window unless Test mode is on (Settings).")
+                   "signals inside the window go to the Window lane, all other times to the Test lane (Live P&L tab).")
 
         latest = closed.iloc[-1]
         m1, m2, m3 = st.columns(3)
@@ -262,6 +306,7 @@ with tab_study:
 - **Rejection:** wick/body ratio, candle direction and close location meet the thresholds.
 {RULE_LINES}
 - **Direction-adjusted columns:** `fwd_return_dir_pct`, `favorable_excursion_pct`, `adverse_excursion_pct` flip the sign for SELL signals. The raw `future_*` columns are kept as-is.
+- **`origin_direction` vs `signal`:** `origin_direction` is the direction of the candle that created the level. `signal` (BUY/SELL) comes from the pattern: a breakout always goes against its level's origin, so a SELL after a break below a Bullish-origin level is expected.
 - **`trade` column:** BUY/SELL if the signal falls inside Tue–Thu 7–11pm IST, otherwise "signal only". `future_*` columns are measured after the signal, so they are analysis only, never an entry condition.
 """.replace("{RULE_LINES}", LEGACY_LINES if legacy else IMPROVED_LINES))
 
@@ -280,7 +325,7 @@ with tab_study:
             v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
             v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
             cols = ["level_id", "level_time", "level_price", "origin_direction", "event_time", "event_price",
-                    "pattern", "forward_close_change_pct", "future_high_excursion_pct",
+                    "pattern", "signal", "forward_close_change_pct", "future_high_excursion_pct",
                     "future_low_excursion_pct", "level_invalidated",
                     "trade", "in_trade_window", "signal_side", "fwd_return_dir_pct",
                     "favorable_excursion_pct", "adverse_excursion_pct"]
@@ -311,38 +356,80 @@ with tab_pnl:
     else:
         nxt = next_window_start(now_utc)
         st.info("Trade window closed" + (f" · next opens {nxt.strftime('%a %d %b %H:%M IST')}" if nxt is not None else ""))
-    st.caption(f"Test mode: {'ON — signals outside the window are also traded and tagged TEST' if S['test_mode'] else 'OFF — window trades only'}"
-               f" · last worker run: {state.get('last_run_utc') or 'never'} · data: {state.get('last_source') or '-'}")
+    st.caption(f"Last worker run: {state.get('last_run_utc') or 'never'} · data: {state.get('last_source') or '-'}")
     if state.get("last_error"):
         st.warning(f"Worker's last error: {state['last_error']}")
-    st.subheader("Test controls")
-    tc1, tc2 = st.columns(2)
-    if S["test_mode"]:
-        if tc1.button("⏹ Stop test mode (enforce the window)"):
-            try:
-                set_settings(test_mode=False)
-                st.rerun()
-            except Exception as exc:                            # noqa: BLE001
-                st.error(f"Could not save: {type(exc).__name__}")
+
+    LANE_ICON = {"RUNNING": "🟢 RUNNING", "PAUSED": "🟡 PAUSED", "STOPPED": "🔴 STOPPED"}
+
+    def close_lane_now(lane):
+        price = live_price or state.get("last_price")
+        if not price:
+            return None                                          # the trader closes them at its next candle
+        fresh = STORE.read("state") or engine.new_state(S)
+        n = engine.close_lane_trades(fresh, lane, float(price), pd.Timestamp.now(tz="UTC").isoformat(), "STOPPED")
+        if n:
+            STORE.write("state", fresh)
+        return n
+
+    def lane_set(lane, status):
+        try:
+            set_settings(**{f"{lane}_lane": status})
+            note = f"{lane.capitalize()} trading is now {status}."
+            if status == "STOPPED":
+                n = close_lane_now(lane)
+                note += (" No live price right now: open trades will be closed at the trader's next candle." if n is None
+                         else f" Closed {n} open trade(s) at the live price." if n else " No open trades to close.")
+            st.session_state["lane_note"] = note
+            read_key.clear()
+        except Exception as exc:                                # noqa: BLE001
+            st.error(f"Could not save: {type(exc).__name__}")
+            return
+        st.rerun()
+
+    st.subheader("Trader controls")
+    note = st.session_state.get("lane_note")
+    if note:
+        st.success(note)
+        del st.session_state["lane_note"]
+    col_w, col_t = st.columns(2)
+    for col, lane, title, sub in ((col_w, "window", "Window trading", "signals inside Tue–Thu 7–11pm IST"),
+                                  (col_t, "test", "Test trading", "signals at any other time")):
+        cur = S[f"{lane}_lane"]
+        with col:
+            st.markdown(f"**{title}** — {sub}  \n{LANE_ICON[cur]}")
+            b1, b2, b3 = st.columns(3)
+            if b1.button("▶ Start", key=f"{lane}_start", disabled=cur == "RUNNING", type="primary",
+                         help="Allow new trades in this lane."):
+                lane_set(lane, "RUNNING")
+            if b2.button("⏸ Pause", key=f"{lane}_pause", disabled=cur != "RUNNING",
+                         help="No new trades. Open trades keep running to their exit. The app stays awake."):
+                lane_set(lane, "PAUSED")
+            if b3.button("⏹ Stop", key=f"{lane}_stop", disabled=cur == "STOPPED",
+                         help="No new trades, and this lane's open trades are closed at the live price."):
+                lane_set(lane, "STOPPED")
+    awake = engine.needs_awake(S, state)
+    if awake:
+        st.info(f"The app stays awake: {awake}.")
     else:
-        if tc1.button("▶ Start test mode (bypass the window)", type="primary"):
-            try:
-                set_settings(test_mode=True)
-                st.rerun()
-            except Exception as exc:                            # noqa: BLE001
-                st.error(f"Could not save: {type(exc).__name__}")
+        st.success("😴 Both lanes are stopped with no open trades: the app stops pinging itself so Render can sleep "
+                   "and save free instance hours. If it stays awake, an outside pinger (cron-job.org) is still calling it.")
+    st.caption("Start = new trades allowed · Pause = no new trades, open ones run on, app stays awake · "
+               "Stop = no new trades, open ones closed at the live price, app may sleep.")
     def _res(kind, text):
         st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
 
-    if tc2.button("➕ Test trade now (follows the current signal)"):
+    if st.button("➕ Test trade now (follows the current signal)"):
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
         dsig = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
         if not data_ok or live_price is None:
             _res("error", "No live data available right now.")
-        elif not (in_win_now or S["test_mode"]):
-            _res("warning", "Outside the Tue–Thu 7–11pm IST window and test mode is stopped. "
-                       "Press 'Start test mode' first to force a test trade.")
+        elif S["window_lane" if in_win_now else "test_lane"] != "RUNNING":
+            _ln = "Window" if in_win_now else "Test"
+            _res("warning", f"{_ln} trading is {S['window_lane' if in_win_now else 'test_lane'].lower()} "
+                            f"(it's {'inside' if in_win_now else 'outside'} the Tue–Thu 7–11pm IST window). "
+                            f"Press ▶ Start under '{_ln} trading' first.")
         elif dsig.empty:
             _res("warning", "There is no directional signal in the loaded sample to follow.")
         else:
@@ -404,8 +491,11 @@ with tab_pnl:
         rows.append(("Settings loaded from storage", "✅" if saved_cfg else "⚠️",
                      "saved settings found" if saved_cfg else "nothing saved yet: defaults are in use"))
         win_now = in_trade_window(now_u)
-        rows.append(("Allowed to trade right now", "✅" if (win_now or S["test_mode"]) else "❌",
-                     f"window {'OPEN' if win_now else 'closed'} · test mode {'ON' if S['test_mode'] else 'OFF'}"))
+        ln = "window" if win_now else "test"
+        other = "test" if win_now else "window"
+        rows.append(("Lane for right now", "✅" if S[f"{ln}_lane"] == "RUNNING" else "❌",
+                     f"{'inside' if win_now else 'outside'} the window → {ln} lane is {S[f'{ln}_lane']} "
+                     f"(the {other} lane is {S[f'{other}_lane']})"))
         rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "
                      f"TP/SL {S['tp_pct']}%/{S['sl_pct']}% · lot ${S['lot_usd']:,.0f}"))
         rows.append(("Rules THIS PAGE uses", "✅" if rules_mode == S["rules_mode"] else "⚠️",
@@ -510,22 +600,34 @@ with tab_set:
                 "saved": "Connected via credentials saved on this server (lost if the server is rebuilt — "
                          "use environment variables to make it permanent).",
                 None: "Not connected: using a local file (lost on restart on free hosting)."}[origin])
-    with st.form("conn"):
-        up_url = st.text_input("Upstash REST URL", placeholder="https://xxxx.upstash.io")
-        up_token = st.text_input("Upstash REST token", type="password")
-        go_save = st.form_submit_button("Save & test connection")
-    if go_save:
-        if not up_url or not up_token:
-            st.error("Enter both the REST URL and the token.")
-        else:
+    if origin == "env":
+        host = (url_now or "").replace("https://", "").split(".")[0]
+        st.success(f"Connected via Render environment variables ✓ (database {host[:4]}…{host[-3:]}). "
+                   "Nothing to enter here.")
+        if st.button("Test connection"):
             try:
-                storemod.test_connection(up_url, up_token)
-                storemod.save_creds(up_url, up_token)
-                read_key.clear()
-                st.success("Connected and saved. The background trader will use it on its next cycle. "
-                           "For permanence also add them as UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN on your host.")
+                _u, _t, _ = storemod.get_creds()
+                storemod.test_connection(_u, _t)
+                st.success("Connection works: a test write and read succeeded.")
             except Exception as exc:                            # noqa: BLE001
-                st.error(f"Connection failed: {type(exc).__name__}. Check the URL and token.")
+                st.error(f"Connection failed: {type(exc).__name__}. Check the variables in Render.")
+    else:
+        with st.form("conn"):
+            up_url = st.text_input("Upstash REST URL", placeholder="https://xxxx.upstash.io")
+            up_token = st.text_input("Upstash REST token", type="password")
+            go_save = st.form_submit_button("Save & test connection")
+        if go_save:
+            if not up_url or not up_token:
+                st.error("Enter both the REST URL and the token.")
+            else:
+                try:
+                    storemod.test_connection(up_url, up_token)
+                    storemod.save_creds(up_url, up_token)
+                    read_key.clear()
+                    st.success("Connected and saved. The background trader will use it on its next cycle. "
+                               "For permanence also add them as UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN on your host.")
+                except Exception as exc:                        # noqa: BLE001
+                    st.error(f"Connection failed: {type(exc).__name__}. Check the URL and token.")
     if origin == "saved" and st.button("Remove saved connection"):
         storemod.clear_creds()
         read_key.clear()
@@ -542,7 +644,7 @@ with tab_set:
         sl_pct = c2.number_input("Stop-loss (%)", 0.05, 10.0, float(S["sl_pct"]), 0.05)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
         max_open = c2.number_input("Max open trades", 1, 20, int(S["max_open"]), 1)
-        st.caption("Test mode start/stop is on the Live P&L tab.")
+        st.caption("Start / Pause / Stop for window and test trading are on the Live P&L tab.")
         origins = ["Both", "Bullish", "Bearish"]
         allowed_origins = st.selectbox("Only trade levels with origin direction", origins,
                                        index=origins.index(S["allowed_origins"]))
@@ -550,15 +652,19 @@ with tab_set:
                                value=bool(S["skip_invalidated_events"]))
         allow_usd = st.checkbox("Allow trading on USD fallback data (Coinbase/Kraken)",
                                 value=bool(S["allow_usd_fallback"]))
+        sleep_outside = st.checkbox("Let Render sleep outside the trade window (saves free hours; needs an outside "
+                                    "pinger scheduled for Tue–Thu evenings)", value=bool(S["sleep_outside_window"]))
         use_sidebar = st.checkbox("Also save the current sidebar study settings for the trader", value=True)
         saved = st.form_submit_button("Save settings")
     if saved:
-        new = dict(S, lot_usd=lot_usd, initial_balance=initial_balance, tp_pct=tp_pct, sl_pct=sl_pct,
-                   fee_pct=fee_pct, max_open=int(max_open), allowed_origins=allowed_origins,
-                   skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd)
-        if use_sidebar:
-            new.update(study_values)
         try:
+            new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
+            new.update(lot_usd=lot_usd, initial_balance=initial_balance, tp_pct=tp_pct, sl_pct=sl_pct,
+                       fee_pct=fee_pct, max_open=int(max_open), allowed_origins=allowed_origins,
+                       skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
+                       sleep_outside_window=sleep_outside)
+            if use_sidebar:
+                new.update(study_values)
             STORE.write("settings", new)
             read_key.clear()
             st.success("Settings saved.")

@@ -3,8 +3,9 @@
   * starts the Streamlit dashboard as a child process on $PORT,
   * runs the paper-trading worker in a background thread (works even if nobody
     has the page open), and
-  * pings the app's own public URL every 10 minutes so Render's free plan is
-    less likely to put it to sleep (also set up an external pinger, see README).
+  * pings the app's own public URL every 10 minutes while something needs it awake
+    (a running/paused lane or open trades); when both lanes are STOPPED it stops pinging so
+    Render's free plan can sleep and save instance hours.
 """
 import os
 import signal
@@ -36,8 +37,13 @@ def pinger():
     while url:
         time.sleep(600)
         try:
+            s = engine.merge_settings(STORE.read("settings"))
+            reason = engine.needs_awake(s, STORE.read("state") or {})
+            if reason is None:                                        # everything stopped: let Render sleep
+                print("[pinger] nothing needs the app awake: not pinging", flush=True)
+                continue
             requests.get(url, timeout=20)
-        except requests.RequestException as exc:
+        except Exception as exc:                                      # noqa: BLE001
             print(f"[pinger] {exc}", flush=True)
 
 

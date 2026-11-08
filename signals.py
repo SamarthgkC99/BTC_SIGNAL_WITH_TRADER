@@ -229,6 +229,7 @@ def run_study(closed_df: pd.DataFrame, p: Params, interval: str = "5m"):
     events = find_events(df, levels, p)
     if not events.empty:
         events["event_close_time"] = events["event_time"] + pd.Timedelta(minutes=INTERVAL_MIN[interval])
+        events["signal"] = events["signal_side"].map(SIDE_LABEL)
         # Always oldest -> newest, so ".iloc[-1]" is the latest signal (legacy scans level by level).
         events = events.sort_values(["event_time", "level_id"], kind="stable").reset_index(drop=True)
     return df, levels, events

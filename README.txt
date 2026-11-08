@@ -21,12 +21,18 @@ Trading rules (all editable in Settings)
   future_high_excursion_pct is measured AFTER the signal, so it is analysis only,
   never an entry condition.
 
-Test controls (Live P&L tab)
-  Start/Stop test mode: bypasses ONLY the Tue-Thu 7-11pm IST window (trades tagged TEST).
-  Test trade now: places ONE trade instantly in the direction of the latest signal at the live price,
-  when the trade window is open or test mode has been started. It follows every trader rule (lot,
-  TP/SL, fee, origin filter, skip-invalidated filter, max open trades, one open trade per level,
-  USD-data rule). Outside the window with test mode stopped, it asks you to start test mode first.
+Trader controls (Live P&L tab): two lanes, each with Start / Pause / Stop
+  Window trading = signals inside Tue-Thu 7-11pm IST (trades tagged WINDOW).
+  Test trading   = signals at any other time (trades tagged TEST).
+  Start = new trades allowed.  Pause = no new trades, open trades keep running, app stays awake.
+  Stop  = no new trades AND that lane's open trades are closed at the live price. Never refused.
+  When both lanes are Stopped with no open trades, the app stops pinging itself so Render can sleep
+  (saves free instance hours). An outside pinger (cron-job.org) will keep waking it - pause that job too.
+  Optional (Settings): 'Let Render sleep outside the trade window' + a cron-job.org job that pings
+  only Tue-Thu ~18:30-23:30 IST uses roughly 65 instance hours a month instead of ~744.
+  Test trade now: places ONE trade instantly, following the latest signal at the live price, if the
+  lane for the current time is Running. It follows every trader rule (lot, TP/SL, fee, origin filter,
+  skip-invalidated filter, max open trades, one open trade per level, USD-data rule).
 
 Price provider (sidebar)
   Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).

@@ -5,8 +5,11 @@ Rules
   * Entry at the signal candle's close. Fixed notional per trade (lot_usd).
   * Exit on take-profit / stop-loss (percent from entry; SL wins if both hit in one
     candle) or after `forward_bars` candles at the close.
-  * Trades are tagged WINDOW (Tue/Wed/Thu 19:00-23:00 IST) or TEST (outside the
-    window, only when test_mode is on).
+  * Two independent lanes, each RUNNING / PAUSED / STOPPED:
+      window lane = signals inside Tue/Wed/Thu 19:00-23:00 IST (trades tagged WINDOW),
+      test lane   = signals outside that window (trades tagged TEST).
+    PAUSED = no new entries, open trades keep running. STOPPED = no new entries and the
+    lane's open trades are closed at the latest price.
 Candles are processed in order, so a late or restarted worker never double-trades.
 """
 import traceback
@@ -20,7 +23,8 @@ from signals import INTERVAL_MIN, SIDE_LABEL, in_trade_window
 
 DEFAULT_SETTINGS = dict(
     initial_balance=5000.0, lot_usd=20.0, tp_pct=0.5, sl_pct=0.5, fee_pct=0.0, max_open=3,
-    test_mode=True, allow_usd_fallback=False, allowed_origins="Both",
+    window_lane="RUNNING", test_lane="STOPPED", sleep_outside_window=False,
+    allow_usd_fallback=False, allowed_origins="Both",
     skip_invalidated_events=False, max_signal_age_bars=2,
     provider="Auto (fallback chain)", provider_fallback=True,
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
@@ -31,6 +35,9 @@ DEFAULT_SETTINGS = dict(
 
 def merge_settings(saved):
     saved = dict(saved or {})
+    if "test_lane" not in saved and "test_mode" in saved:     # old on/off switch -> lane state
+        saved["test_lane"] = "RUNNING" if saved["test_mode"] else "STOPPED"
+    saved.pop("test_mode", None)
     if saved and "rules_mode" not in saved:        # settings saved before the rules switch existed:
         saved.pop("cooldown_bars", None)           # use the current defaults for the cooldown/confirm settings
         saved.pop("confirm_closes", None)
@@ -51,6 +58,30 @@ def _pnl(t, exit_price):
     return gross, fee, gross - fee
 
 
+def lane_of(trade):
+    return "window" if trade.get("mode") == "WINDOW" else "test"
+
+
+def close_trade(t, price, reason, exit_time_iso, bars_held=None, seen=None):
+    """Book a trade's exit. `seen` = candles from entry to exit (for the excursion columns)."""
+    gross, fee, net = _pnl(t, price)
+    t.update(status="CLOSED", exit_reason=reason, exit_price=float(price), exit_time=exit_time_iso,
+             bars_held=bars_held, gross_pnl_usd=gross, fee_usd=fee, pnl_usd=net)
+    if seen is not None and len(seen):
+        t["future_high_excursion_pct"] = (float(seen["high"].max()) / t["entry_price"] - 1) * 100
+        t["future_low_excursion_pct"] = (float(seen["low"].min()) / t["entry_price"] - 1) * 100
+
+
+def close_lane_trades(state, lane, price, exit_time_iso, reason="STOPPED"):
+    """Close every open trade of a lane at `price`. Returns how many were closed."""
+    n = 0
+    for t in state["trades"]:
+        if t["status"] == "OPEN" and lane_of(t) == lane:
+            close_trade(t, price, reason, exit_time_iso)
+            n += 1
+    return n
+
+
 def _process_exits(state, closed, iv):
     for t in state["trades"]:
         if t["status"] != "OPEN":
@@ -69,16 +100,29 @@ def _process_exits(state, closed, iv):
                 price, reason = float(row.close), "TIME"
             else:
                 continue
-            seen = after.iloc[:k]
-            gross, fee, net = _pnl(t, price)
-            t.update(
-                status="CLOSED", exit_reason=reason, exit_price=float(price),
-                exit_time=(row.open_time + iv).isoformat(), bars_held=k,
-                gross_pnl_usd=gross, fee_usd=fee, pnl_usd=net,
-                future_high_excursion_pct=(float(seen["high"].max()) / t["entry_price"] - 1) * 100,
-                future_low_excursion_pct=(float(seen["low"].min()) / t["entry_price"] - 1) * 100,
-            )
+            close_trade(t, price, reason, (row.open_time + iv).isoformat(), k, after.iloc[:k])
             break
+
+
+def _near_window(now_utc, margin_min=30):
+    t = pd.Timestamp(now_utc).tz_convert(signals.IST)
+    minutes = t.hour * 60 + t.minute
+    return t.weekday() in (1, 2, 3) and 19 * 60 - margin_min <= minutes < 23 * 60 + margin_min
+
+
+def needs_awake(s, state, now_utc=None):
+    """Reason the app should keep Render awake, or None if it may sleep (saves free hours)."""
+    now_utc = now_utc if now_utc is not None else pd.Timestamp.now(tz="UTC")
+    if any(t["status"] == "OPEN" for t in state.get("trades", [])):
+        return "open trades are being managed"
+    if "PAUSED" in (s["window_lane"], s["test_lane"]):
+        return "a lane is paused (stays awake so Start is instant)"
+    if s["test_lane"] == "RUNNING":
+        return "test trading is running"
+    if s["window_lane"] == "RUNNING":
+        if not s["sleep_outside_window"] or _near_window(now_utc):
+            return "window trading is running"
+    return None
 
 
 def usd_ok(s, quote):
@@ -128,10 +172,12 @@ def _consider(state, s, ev, latest_open, iv, source, quote):
         "source": source, "action": "",
     }
     age = (latest_open - ev["event_time"]) / iv
+    lane_now = s["window_lane"] if in_win else s["test_lane"]
     if age > s["max_signal_age_bars"]:
         reason = "stale signal (worker was behind)"
-    elif not in_win and not s["test_mode"]:
-        reason = "outside trade window"
+    elif lane_now != "RUNNING":
+        reason = (f"window trading is {lane_now.lower()}" if in_win
+                  else f"outside the window and test trading is {lane_now.lower()}")
     else:
         reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote)
     if reason:
@@ -154,6 +200,9 @@ def process(state, s, closed, events, source, quote, now=None):
     state.update(last_run_utc=now.isoformat(), last_source=source, last_quote=quote,
                  last_price=float(closed["close"].iloc[-1]), last_error=None)
     _process_exits(state, closed, iv)
+    for t in state["trades"]:                              # a STOPPED lane never keeps open trades
+        if t["status"] == "OPEN" and s[f"{lane_of(t)}_lane"] == "STOPPED":
+            close_trade(t, float(closed["close"].iloc[-1]), "STOPPED", (latest_open + iv).isoformat())
     if state["last_candle_time"] is None:                 # first run: start from "now", never trade history
         state["last_candle_time"] = latest_open.isoformat()
         return state
@@ -170,6 +219,12 @@ def process(state, s, closed, events, source, quote, now=None):
 
 def _merge_foreign(state, fresh):
     """Keep trades/signals the page added (test trades) while this cycle was running."""
+    fresh_by_uid = {t.get("uid"): t for t in fresh.get("trades", []) if t.get("uid")}
+    for t in state["trades"]:                              # trades the page closed (Stop / manual) while we ran
+        ft = fresh_by_uid.get(t.get("uid"))
+        if t["status"] == "OPEN" and ft and ft["status"] == "CLOSED" and ft.get("exit_reason") in ("MANUAL", "STOPPED"):
+            t.clear()
+            t.update(ft)
     own_uids = {t.get("uid") for t in state["trades"]}
     own_ids = {t["id"] for t in state["trades"]}
     for t in fresh.get("trades", []):
