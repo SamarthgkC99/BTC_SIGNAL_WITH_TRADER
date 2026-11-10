@@ -4,7 +4,9 @@ Rules
   * BUY on bullish patterns, SELL (short) on bearish patterns; plain touches are skipped.
   * Entry at the signal candle's close. Fixed notional per trade (lot_usd).
   * Exit on take-profit / stop-loss (percent from entry; SL wins if both hit in one
-    candle) or after `forward_bars` candles at the close.
+    candle), or when an opposite signal arrives (position is flipped), or - only if
+    max_hold_bars > 0 - after that many candles. Default: hold until TP/SL or a flip.
+  * Window trades are closed at 23:00 IST (window end) whether in profit or loss, if close_at_window_end.
   * Two independent lanes, each RUNNING / PAUSED / STOPPED:
       window lane = signals inside Tue/Wed/Thu 19:00-23:00 IST (trades tagged WINDOW),
       test lane   = signals outside that window (trades tagged TEST).
@@ -24,6 +26,7 @@ from signals import INTERVAL_MIN, SIDE_LABEL, in_trade_window
 DEFAULT_SETTINGS = dict(
     initial_balance=5000.0, lot_usd=20.0, tp_pct=0.5, sl_pct=0.5, fee_pct=0.0, max_open=3,
     window_lane="RUNNING", test_lane="STOPPED", sleep_outside_window=False,
+    position_mode="Single position (flip on opposite signal)", max_hold_bars=0, close_at_window_end=True,
     allow_usd_fallback=False, allowed_origins="Both",
     skip_invalidated_events=False, max_signal_age_bars=2,
     provider="Auto (fallback chain)", provider_fallback=True,
@@ -86,7 +89,14 @@ def _process_exits(state, closed, iv):
     for t in state["trades"]:
         if t["status"] != "OPEN":
             continue
-        after = closed[closed["open_time"] > pd.Timestamp(t["event_open_time"])].head(t["horizon"])
+        ev_open, h = pd.Timestamp(t["event_open_time"]), int(t["horizon"])
+        wend = pd.Timestamp(t["window_end"]) if t.get("window_end") else None
+        if len(closed) and closed["open_time"].iloc[0] > ev_open + iv:    # candles after entry are no longer loaded
+            close_trade(t, float(closed["close"].iloc[-1]), "HISTORY", (closed["open_time"].iloc[-1] + iv).isoformat())
+            continue
+        after = closed[closed["open_time"] > ev_open]
+        if h > 0:
+            after = after.head(h)
         for k, row in enumerate(after.itertuples(index=False), start=1):
             if t["side_num"] > 0:
                 sl_hit, tp_hit = row.low <= t["sl"], row.high >= t["tp"]
@@ -96,7 +106,9 @@ def _process_exits(state, closed, iv):
                 price, reason = t["sl"], "SL"
             elif tp_hit:
                 price, reason = t["tp"], "TP"
-            elif k >= t["horizon"]:
+            elif wend is not None and row.open_time + iv >= wend:
+                price, reason = float(row.close), "WINDOW_END"
+            elif h > 0 and k >= h:
                 price, reason = float(row.close), "TIME"
             else:
                 continue
@@ -129,20 +141,53 @@ def usd_ok(s, quote):
     return quote == "USDT" or bool(s.get("allow_usd_fallback")) or s.get("provider") in providers.USD_PROVIDERS
 
 
-def block_reason(state, s, origin, invalidated, level_time_iso, quote):
+def is_single(s):
+    return str(s.get("position_mode", "")).startswith("Single")
+
+
+def open_in_lane(state, lane):
+    return [t for t in state["trades"] if t["status"] == "OPEN" and lane_of(t) == lane]
+
+
+def close_opposite(state, lane, side, price, exit_time_iso, closed=None, upto_open_time=None):
+    """Flip: close this lane's open trades that point the other way. Returns how many were closed."""
+    n = 0
+    for t in open_in_lane(state, lane):
+        if t["side_num"] == side:
+            continue
+        seen, bars = None, None
+        if closed is not None and upto_open_time is not None:
+            seen = closed[(closed["open_time"] > pd.Timestamp(t["event_open_time"])) & (closed["open_time"] <= upto_open_time)]
+            bars = len(seen)
+        close_trade(t, price, "REVERSED", exit_time_iso, bars, seen)
+        n += 1
+    return n
+
+
+def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane=None):
     """Trader rules shared by automatic and manual test entries (the timing window is checked elsewhere)."""
     open_trades = [t for t in state["trades"] if t["status"] == "OPEN"]
     if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
         return f"origin filter ({s['allowed_origins']} only)"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"
-    if len(open_trades) >= s["max_open"]:
-        return "max open trades reached"
-    if any(t["level_time"] == level_time_iso for t in open_trades):
-        return "level already has an open trade"
+    if is_single(s) and side is not None and lane is not None:
+        if any(t["side_num"] == side for t in open_in_lane(state, lane)):
+            return f"already in a {SIDE_LABEL[side]} position"
+    else:
+        if len(open_trades) >= s["max_open"]:
+            return "max open trades reached"
+        if any(t["level_time"] == level_time_iso for t in open_trades):
+            return "level already has an open trade"
     if not usd_ok(s, quote):
         return "USD fallback data not allowed"
     return None
+
+
+def _window_end_iso(entry_time_iso):
+    """23:00 IST on the IST date of the entry, as a UTC ISO string."""
+    t = pd.Timestamp(entry_time_iso).tz_convert(signals.IST)
+    return (t.normalize() + pd.Timedelta(hours=23)).tz_convert("UTC").isoformat()
 
 
 def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso, level_price,
@@ -156,11 +201,12 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
         "event_open_time": event_open_time_iso, "entry_time": entry_time_iso,
         "entry_price": float(entry), "lot_usd": float(s["lot_usd"]), "qty": s["lot_usd"] / entry,
         "tp": entry * (1 + side * tp_f), "sl": entry * (1 - side * sl_f),
-        "horizon": int(s["forward_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
+        "horizon": int(s["max_hold_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
+        "window_end": _window_end_iso(entry_time_iso) if (mode == "WINDOW" and s.get("close_at_window_end")) else None,
     }
 
 
-def _consider(state, s, ev, latest_open, iv, source, quote):
+def _consider(state, s, ev, latest_open, iv, source, quote, closed=None):
     side = int(ev["signal_side"])
     close_ts = ev["event_time"] + iv
     in_win = in_trade_window(close_ts)
@@ -172,23 +218,28 @@ def _consider(state, s, ev, latest_open, iv, source, quote):
         "source": source, "action": "",
     }
     age = (latest_open - ev["event_time"]) / iv
-    lane_now = s["window_lane"] if in_win else s["test_lane"]
+    lane_name = "window" if in_win else "test"
+    lane_now = s[f"{lane_name}_lane"]
     if age > s["max_signal_age_bars"]:
         reason = "stale signal (worker was behind)"
     elif lane_now != "RUNNING":
         reason = (f"window trading is {lane_now.lower()}" if in_win
                   else f"outside the window and test trading is {lane_now.lower()}")
     else:
-        reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote)
+        reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote, side, lane_name)
     if reason:
         sig["action"] = "SKIPPED: " + reason
     else:
+        flipped = 0
+        if is_single(s):
+            flipped = close_opposite(state, lane_name, side, float(ev["event_price"]), close_ts.isoformat(),
+                                     closed, ev["event_time"])
         state["trades"].append(build_trade(
             state["next_id"], s, side, ev["pattern"], ev["origin_direction"], ev["level_invalidated"],
             level_iso, ev["level_price"], ev["event_time"].isoformat(), close_ts.isoformat(),
             float(ev["event_price"]), source, "WINDOW" if in_win else "TEST"))
         state["next_id"] += 1
-        sig["action"] = "TRADED"
+        sig["action"] = "TRADED" + (f" (flipped {flipped} opposite position)" if flipped else "")
     state["signals"].append(sig)
 
 
@@ -210,7 +261,7 @@ def process(state, s, closed, events, source, quote, now=None):
     if events is not None and not events.empty:
         new = events[(events["event_time"] > last_seen) & (events["signal_side"] != 0)]
         for _, ev in new.sort_values("event_time").iterrows():
-            _consider(state, s, ev, latest_open, iv, source, quote)
+            _consider(state, s, ev, latest_open, iv, source, quote, closed)
     state["last_candle_time"] = max(last_seen, latest_open).isoformat()
     state["signals"] = state["signals"][-100:]
     state["trades"] = state["trades"][-2000:]

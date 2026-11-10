@@ -11,12 +11,22 @@ Files
   store.py      Upstash Redis (REST) or local JSON-file fallback
   render.yaml   Render blueprint (free plan, Singapore region)
 
+Position mode (Settings)
+  Single position (default): the trader holds ONE position per lane and follows the latest signal.
+  A new signal in the SAME direction is ignored; a signal in the OPPOSITE direction closes the open
+  trade at the signal price (exit reason REVERSED) and opens the new one. TP/SL still apply.
+  Max holding candles: 0 (default) = no time limit; set N to also exit after N candles.
+  Multiple trades (independent): the earlier behaviour (max open trades, one per level).
+  Close at window end (default ON): window trades are closed at 23:00 IST at that candle's close,
+  whether in profit or loss (exit reason WINDOW_END). Test-lane trades are not affected.
+  Note: test-lane trades with no time limit can stay open for hours, which keeps the Render app awake.
+
 Trading rules (all editable in Settings)
   BUY on bullish patterns, SELL (short) on bearish patterns; plain touches skipped.
   Window: Tue/Wed/Thu 19:00-23:00 IST, judged by the signal candle's close time.
   Test mode (default ON): signals outside the window are also traded and tagged TEST.
-  Lot $20 notional, initial balance $5,000, TP 0.5% / SL 0.5%, time exit after the
-  forward horizon (default 6 candles). If TP and SL are both inside one candle, SL is assumed.
+  Lot $20 notional, initial balance $5,000, TP 0.5% / SL 0.5%, optional time exit
+  (Max holding candles, default none). If TP and SL are both inside one candle, SL is assumed.
   Entry = signal candle close. Fees default 0 (simulated setting).
   future_high_excursion_pct is measured AFTER the signal, so it is analysis only,
   never an entry condition.

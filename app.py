@@ -438,12 +438,14 @@ with tab_pnl:
             level_iso = last["level_time"].isoformat()
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
+                lane_for = "window" if in_win_now else "test"
                 why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
-                                          level_iso, quote_currency)
+                                          level_iso, quote_currency, side, lane_for)
                 if why:
                     hint = next((h for k, h in {
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
                         "level already": "That signal's level already has an open trade. Wait for it to close or for a new signal.",
+                        "already in a": "This lane already holds a position in that direction. It flips only when the opposite signal arrives.",
                         "max open": "Raise 'Max open trades' in Settings, or wait for a trade to close.",
                         "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
@@ -456,6 +458,8 @@ with tab_pnl:
                         bool(last["level_invalidated"]), level_iso, last["level_price"],
                         chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
                         data_source, "WINDOW" if in_win_now else "TEST", "manual")
+                    flipped = (engine.close_opposite(fresh, lane_for, side, float(live_price), now_t.isoformat())
+                               if engine.is_single(S) else 0)
                     fresh["next_id"] += 1
                     fresh["trades"].append(item)
                     fresh["signals"].append({
@@ -468,7 +472,8 @@ with tab_pnl:
                     state = fresh
                     ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
                     _res("success", f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following the "
-                               f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago.")
+                               f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago."
+                               + (f" It closed {flipped} opposite position(s) first." if flipped else ""))
             except Exception as exc:                                        # noqa: BLE001
                 _res("error", f"Could not place the test trade: {type(exc).__name__}")
     res = st.session_state.get("test_result")
@@ -518,9 +523,12 @@ with tab_pnl:
                  f"set to '{S['allowed_origins']}'"),
                 ("'Skip events that invalidate their level'", not (S["skip_invalidated_events"] and bool(ls["level_invalidated"])),
                  f"{'ticked' if S['skip_invalidated_events'] else 'not ticked'}; this signal {'does' if ls['level_invalidated'] else 'does not'} end its level"),
-                ("Max open trades", len(opens) < S["max_open"], f"{len(opens)} open of max {S['max_open']}"),
-                ("One open trade per level", not any(t["level_time"] == lv for t in opens),
-                 "that level already has an open trade" if any(t["level_time"] == lv for t in opens) else "free"),
+                *([("Position rule", not any(t["side_num"] == int(ls["signal_side"]) for t in opens if engine.lane_of(t) == ("window" if win_now else "test")),
+                    f"single-position mode: same direction in this lane blocks, the opposite direction flips ({sum(1 for t in opens if engine.lane_of(t) == ('window' if win_now else 'test'))} open in the lane)")]
+                  if engine.is_single(S) else
+                  [("Max open trades", len(opens) < S["max_open"], f"{len(opens)} open of max {S['max_open']}"),
+                   ("One open trade per level", not any(t["level_time"] == lv for t in opens),
+                    "that level already has an open trade" if any(t["level_time"] == lv for t in opens) else "free")]),
                 ("Data currency", engine.usd_ok(S, quote_currency), f"data is {quote_currency}"),
             ]
             for name, passed, detail in checks:
@@ -560,7 +568,9 @@ with tab_pnl:
         if price_for_pnl:
             opened["unrealized_usd"] = opened["qty"] * (price_for_pnl - opened["entry_price"]) * opened["side_num"]
         opened["entry_ist"] = ist_str(opened["entry_time"])
-        show_df(opened[["id", "mode", "side", "pattern", "entry_ist", "entry_price", "tp", "sl", "unrealized_usd"]].round(4),
+        opened["closes_at_ist"] = [ist_str(pd.Series([pd.Timestamp(w)]))[0] if isinstance(w, str) and w else "TP/SL or flip"
+                                   for w in opened.get("window_end", [None] * len(opened))]
+        show_df(opened[["id", "mode", "side", "pattern", "entry_ist", "entry_price", "tp", "sl", "closes_at_ist", "unrealized_usd"]].round(4),
                 ["id", "side", "entry_price", "unrealized_usd"], compact)
 
 # ================================================================= ACTIVITY TAB
@@ -643,7 +653,14 @@ with tab_set:
         tp_pct = c1.number_input("Take-profit (%)", 0.05, 10.0, float(S["tp_pct"]), 0.05)
         sl_pct = c2.number_input("Stop-loss (%)", 0.05, 10.0, float(S["sl_pct"]), 0.05)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
-        max_open = c2.number_input("Max open trades", 1, 20, int(S["max_open"]), 1)
+        max_open = c2.number_input("Max open trades (multiple-trades mode only)", 1, 20, int(S["max_open"]), 1)
+        pm_opts = ["Single position (flip on opposite signal)", "Multiple trades (independent)"]
+        position_mode = st.selectbox("Position mode", pm_opts,
+                                     index=pm_opts.index(S["position_mode"]) if S["position_mode"] in pm_opts else 0)
+        max_hold_bars = st.number_input("Max holding candles (0 = hold until TP/SL or the opposite signal)", 0, 500,
+                                        int(S["max_hold_bars"]), 1)
+        close_end = st.checkbox("Close window trades at 11:00pm IST (whether in profit or loss)",
+                                value=bool(S["close_at_window_end"]))
         st.caption("Start / Pause / Stop for window and test trading are on the Live P&L tab.")
         origins = ["Both", "Bullish", "Bearish"]
         allowed_origins = st.selectbox("Only trade levels with origin direction", origins,
@@ -660,7 +677,8 @@ with tab_set:
         try:
             new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
             new.update(lot_usd=lot_usd, initial_balance=initial_balance, tp_pct=tp_pct, sl_pct=sl_pct,
-                       fee_pct=fee_pct, max_open=int(max_open), allowed_origins=allowed_origins,
+                       fee_pct=fee_pct, max_open=int(max_open), position_mode=position_mode, max_hold_bars=int(max_hold_bars), close_at_window_end=close_end,
+                       allowed_origins=allowed_origins,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
                        sleep_outside_window=sleep_outside)
             if use_sidebar:
@@ -671,7 +689,8 @@ with tab_set:
         except Exception as exc:                                # noqa: BLE001
             st.error(f"Could not save settings: {type(exc).__name__}")
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
-               f"provider {S['provider']} · horizon {S['forward_bars']} bars · TP/SL {S['tp_pct']}% / {S['sl_pct']}% · lot ${S['lot_usd']:,.0f}")
+               f"provider {S['provider']} · {'flip on opposite signal' if engine.is_single(S) else 'multiple trades'} · "
+               f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · TP/SL {S['tp_pct']}% / {S['sl_pct']}% · lot ${S['lot_usd']:,.0f}")
 
     with st.expander("Reset demo account"):
         sure = st.checkbox("I understand this deletes all trades and restarts from the initial balance")
