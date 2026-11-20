@@ -11,38 +11,47 @@ Files
   store.py      Upstash Redis (REST) or local JSON-file fallback
   render.yaml   Render blueprint (free plan, Singapore region)
 
-Position mode (Settings)
-  Single position (default): the trader holds ONE position per lane and follows the latest signal.
-  A new signal in the SAME direction is ignored; a signal in the OPPOSITE direction closes the open
-  trade at the signal price (exit reason REVERSED) and opens the new one. TP/SL still apply.
-  Max holding candles: 0 (default) = no time limit; set N to also exit after N candles.
-  Multiple trades (independent): the earlier behaviour (max open trades, one per level).
-  Close at window end (default ON): window trades are closed at 23:00 IST at that candle's close,
-  whether in profit or loss (exit reason WINDOW_END). Test-lane trades are not affected.
-  Note: test-lane trades with no time limit can stay open for hours, which keeps the Render app awake.
-
 Trading rules (all editable in Settings)
-  BUY on bullish patterns, SELL (short) on bearish patterns; plain touches skipped.
-  Window: Tue/Wed/Thu 19:00-23:00 IST, judged by the signal candle's close time.
-  Test mode (default ON): signals outside the window are also traded and tagged TEST.
-  Lot $20 notional, initial balance $5,000, TP 0.5% / SL 0.5%, optional time exit
-  (Max holding candles, default none). If TP and SL are both inside one candle, SL is assumed.
-  Entry = signal candle close. Fees default 0 (simulated setting).
-  future_high_excursion_pct is measured AFTER the signal, so it is analysis only,
-  never an entry condition.
+  * Trading hours only. The trader acts on the historical study's window: Tuesday, Wednesday
+    and Thursday, 19:00-23:00 IST, judged by the signal candle's close time. Signals at any
+    other time are logged as skipped and never traded. Every still-open position is closed at
+    23:00 IST, profit or loss (exit reason WINDOW_END).
+  * Origin direction. BUY only when the level's originating impulse was bullish, SELL only when
+    it was bearish. A signal pointing against its level's origin is skipped ("against the
+    level's origin direction"). Ticking "Also take breakouts that go against the level's origin
+    direction" lifts this for breakout patterns. Under Improved rules every "strong close"
+    breakout is counter-origin, so that switch is the only way they trade.
+  * One position, skip repeats. The trader holds a single position. A signal in the same
+    direction as the last trade it took is skipped, whether that trade is still open or was
+    closed by TP/SL. The set of skip reasons is shown in "Why isn't it trading?".
+  * Flip on the opposite signal. An opposite signal closes the open position at that signal's
+    price, win or lose (exit reason REVERSED), and immediately opens the other side.
+  * Sizing and exits. Entry at the signal candle's close (live price for a startup catch-up and
+    the Force button). Lot $20 notional, initial balance $5,000, TP 0.5% / SL 0.5%; SL wins if
+    both are inside one candle; optional time exit (Max holding candles, default none).
+    Fees default 0 (simulated setting).
+  * Start now = trade now. On startup, or when Start is pressed inside the window, the trader
+    takes the newest signal if it is at most 2 candles old and passes the rules. It never
+    replays older history, and a restart cannot duplicate a trade.
+  * future_high_excursion_pct is measured AFTER the signal, so it is analysis only,
+    never an entry condition.
 
-Trader controls (Live P&L tab): two lanes, each with Start / Pause / Stop
-  Window trading = signals inside Tue-Thu 7-11pm IST (trades tagged WINDOW).
-  Test trading   = signals at any other time (trades tagged TEST).
-  Start = new trades allowed.  Pause = no new trades, open trades keep running, app stays awake.
-  Stop  = no new trades AND that lane's open trades are closed at the live price. Never refused.
-  When both lanes are Stopped with no open trades, the app stops pinging itself so Render can sleep
-  (saves free instance hours). An outside pinger (cron-job.org) will keep waking it - pause that job too.
-  Optional (Settings): 'Let Render sleep outside the trade window' + a cron-job.org job that pings
-  only Tue-Thu ~18:30-23:30 IST uses roughly 65 instance hours a month instead of ~744.
-  Test trade now: places ONE trade instantly, following the latest signal at the live price, if the
-  lane for the current time is Running. It follows every trader rule (lot, TP/SL, fee, origin filter,
-  skip-invalidated filter, max open trades, one open trade per level, USD-data rule).
+Trader controls (Live P&L tab)
+  One control: Window trading = signals inside Tue-Thu 19:00-23:00 IST.
+  Start = new trades allowed (and the newest fresh signal is taken now).
+  Pause = no new trades, an open trade keeps running, the app stays awake.
+  Stop  = no new trades AND the open trade is closed at the live price. Never refused.
+  When trading is Stopped with no open trade, the app stops pinging itself so Render can sleep
+  (saves free instance hours). An outside pinger (cron-job.org) will keep waking it - pause
+  that job too.
+  Optional (Settings): 'Let Render sleep outside the trade window' + a cron-job.org job that
+  pings only Tue-Thu ~18:30-23:30 IST uses roughly 65 instance hours a month instead of ~744.
+
+Force trade now
+  Places ONE trade instantly at the live price following the latest signal. It bypasses the
+  window and the repeat-direction rules (that is what forcing means) and flips an opposite
+  position first, but still uses the lot, TP/SL, fee and data-currency rules. It is the only
+  way to trade outside the window.
 
 Price provider (sidebar)
   Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).
