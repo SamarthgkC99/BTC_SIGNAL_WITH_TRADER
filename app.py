@@ -366,143 +366,6 @@ with tab_pnl:
         price = live_price or state.get("last_price")
         if not price:
             return None                                          # the trader closes them at its next candle
-ABEL[int(last["signal_side"])]
-            when = last["event_time"].tz_convert(IST).strftime("%a %d %b %H:%M IST")
-            took = in_trade_window(last["event_close_time"])
-            what = {"Strong close above level (candidate)": "closed strongly above",
-                    "Strong close below level (candidate)": "closed strongly below",
-                    "Bullish rejection (candidate)": "bounced up from",
-                    "Bearish rejection (candidate)": "was rejected down from"}[last["pattern"]]
-            msg = (f"**Latest signal: {label}** — price {what} a **{last['origin_direction']}-origin** level at "
-                   f"{last['level_price']:,.2f} (level {int(last['level_id'])}). Candle {when} · {ago} candle(s) ago · "
-                   f"price {last['event_price']:,.2f} {quote_currency} · "
-                   f"{'inside' if took else 'outside'} the Tue–Thu 7–11pm IST window")
-            (st.success if ago <= 3 else st.info)(msg)
-        else:
-            st.info("No directional signal in the loaded sample yet.")
-        st.caption(f"Trade window right now: {'OPEN' if win_open else 'closed'} · signals are shown at any day/time; "
-                   "signals inside the window go to the Window lane, all other times to the Test lane (Live P&L tab).")
-
-        latest = closed.iloc[-1]
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Last closed candle (IST)", latest["open_time"].tz_convert(IST).strftime("%Y-%m-%d %H:%M"))
-        m2.metric(f"Last closed close ({quote_currency})", f'{latest["close"]:,.2f}')
-        m3.metric("Candidate momentum levels", f"{len(levels)}")
-
-        if forming:
-            live = chart_df.iloc[-1]
-            st.info(
-                f"A candle is currently forming (shown on the chart, excluded from calculations). "
-                f"Open {live['open_time'].tz_convert(IST).strftime('%H:%M:%S IST')} · "
-                f"O {live['open']:,.2f} / H {live['high']:,.2f} / L {live['low']:,.2f} / "
-                f"latest {live['close']:,.2f} {quote_currency}. Provisional until the interval ends.")
-        st.caption(f"Active data source: {data_source} · Quote currency: {quote_currency} · "
-                   f"Candles loaded: {len(df)} · Auto-refresh: {'on (30s)' if auto_refresh else 'off'}")
-        if provider != "Auto (fallback chain)" and not data_source.startswith(provider.split()[0]):
-            st.info(f"Your chosen provider ({provider}) failed, so data comes from {data_source}.")
-        if quote_currency != "USDT":
-            st.warning("USD fallback data is being displayed. The demo trader pauses on USD data unless you allow it in Settings.")
-        if provider_errors:
-            with st.expander("API fallback diagnostics"):
-                for item in provider_errors:
-                    st.text(item)
-
-        st.subheader("Historical price and candidate momentum-origin levels (IST)")
-        x_all = ist_naive(chart_df["open_time"])
-        fig = go.Figure(data=[go.Candlestick(
-            x=x_all, open=chart_df["open"], high=chart_df["high"], low=chart_df["low"],
-            close=chart_df["close"], name=f"BTC/{quote_currency}")])
-        x_end = x_all.iloc[-1]
-        for n, lv in enumerate(levels, start=1):
-            x0 = lv["time"].tz_convert(IST).tz_localize(None)
-            inv = bool(lv.get("invalidated"))
-            fig.add_shape(type="line", x0=x0, x1=x_end, y0=lv["price"], y1=lv["price"],
-                          line=dict(dash="dot", width=1, color="rgba(120,120,120,%s)" % (0.35 if inv else 0.8)))
-            if not compact:
-                fig.add_annotation(x=x_end, y=lv["price"], xanchor="left", showarrow=False, font=dict(size=9),
-                                   text=f"L{n} {lv['direction']}" + (" • invalidated" if inv else ""))
-        if not events.empty:
-            style = {1: ("#16a34a", "triangle-up"), -1: ("#dc2626", "triangle-down"), 0: ("#9ca3af", "circle")}
-            for pat, grp in events.groupby("pattern"):
-                col, sym = style[int(grp["signal_side"].iloc[0])]
-                fig.add_trace(go.Scatter(
-                    x=ist_naive(grp["event_time"]), y=grp["event_price"], mode="markers",
-                    marker=dict(size=9, color=col, symbol=sym), name=pat,
-                    hovertemplate="%{x}<br>Price: %{y:.2f}<br>" + pat + "<extra></extra>"))
-        fig.update_layout(height=380 if compact else 650, xaxis_rangeslider_visible=False,
-                          xaxis_title="Time (IST)", yaxis_title=f"Price ({quote_currency})",
-                          legend_orientation="h", margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig, width="stretch")
-
-        st.subheader("Method definition used in this prototype")
-        LEGACY_LINES = """- **Event rules: Legacy (first version).** A level is checked only on candles that touch it. Rejection patterns are checked before breaks. A strong break needs the candle to open on one side of the level and close on the other, with a big body near its edge, and ends the level. Cooldown applies after every event. No de-duplication across levels."""
-        IMPROVED_LINES = """- **Event rules: Improved.** Strong break is checked before rejection patterns. A level also ends after N consecutive closes beyond it, checked on every candle (touch or not). One event per candle: if several levels fire together, the defined pattern / most recent level is kept."""
-        st.markdown("""
-- **Impulse candle:** body ≥ the selected multiple of ATR. **Momentum origin:** the impulse candle's open (placeholder definition).
-- **Nearby-level filter:** a candidate is kept only if it is at least the selected ATR distance from existing levels.
-- **Rejection:** wick/body ratio, candle direction and close location meet the thresholds.
-{RULE_LINES}
-- **Direction-adjusted columns:** `fwd_return_dir_pct`, `favorable_excursion_pct`, `adverse_excursion_pct` flip the sign for SELL signals. The raw `future_*` columns are kept as-is.
-- **`origin_direction` vs `signal`:** `origin_direction` is the direction of the candle that created the level. `signal` (BUY/SELL) comes from the pattern: a breakout always goes against its level's origin, so a SELL after a break below a Bullish-origin level is expected.
-- **`trade` column:** BUY/SELL if the signal falls inside Tue–Thu 7–11pm IST, otherwise "signal only". `future_*` columns are measured after the signal, so they are analysis only, never an entry condition.
-""".replace("{RULE_LINES}", LEGACY_LINES if legacy else IMPROVED_LINES))
-
-        st.subheader("Historical event study (IST)")
-        if events.empty:
-            st.warning("No level-touch events met the current definitions in this sample.")
-        else:
-            v = events.copy()
-            v["in_trade_window"] = v["event_close_time"].apply(in_trade_window)
-            side_lbl = v["signal_side"].map(SIDE_LABEL)
-            v["trade"] = np.where(v["signal_side"] == 0, "", np.where(v["in_trade_window"], side_lbl, "signal only"))
-            order = st.radio("Order", ["By level, then time (as in the first version)", "Newest first"],
-                             horizontal=True)
-            v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
-                 else v.sort_values("event_time", ascending=False))
-            v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
-            v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
-            cols = ["level_id", "level_time", "level_price", "origin_direction", "event_time", "event_price",
-                    "pattern", "signal", "forward_close_change_pct", "future_high_excursion_pct",
-                    "future_low_excursion_pct", "level_invalidated",
-                    "trade", "in_trade_window", "signal_side", "fwd_return_dir_pct",
-                    "favorable_excursion_pct", "adverse_excursion_pct"]
-            view = v[cols].round(5)
-            show_df(view)
-            st.download_button("Download event-study CSV (IST)", data=view.to_csv(index=False).encode("utf-8"),
-                               file_name="btc_momentum_level_events_ist.csv", mime="text/csv")
-            st.subheader("Descriptive outcomes by observed pattern")
-            show_df(signals.summarize(events).round(4),
-                    ["pattern", "events", "avg_dir_return_pct", "dir_win_rate_pct", "avg_future_high_excursion_pct"],
-                    compact)
-        st.warning("Research prototype. Outcomes are descriptive, exclude fees/slippage/funding, and do not prove an edge. "
-                   "Fallbacks may switch from BTC/USDT to BTC/USD, which is labelled.")
-
-# ================================================================= LIVE P&L TAB
-state, state_err = read_key("state")
-state = state or engine.new_state(S)
-price_for_pnl = live_price if live_price else state.get("last_price")
-
-with tab_pnl:
-    if state_err:
-        st.error(f"Storage read problem: {state_err}")
-    st.caption(f"Storage: {STORE.backend()}" + (" — ⚠️ data is lost on restart; connect Upstash in Settings"
-               if not storemod.get_creds()[0] else ""))
-    now_utc = pd.Timestamp.now(tz="UTC")
-    if in_trade_window(now_utc):
-        st.success("Trade window OPEN (Tue/Wed/Thu 7–11pm IST)")
-    else:
-        nxt = next_window_start(now_utc)
-        st.info("Trade window closed" + (f" · next opens {nxt.strftime('%a %d %b %H:%M IST')}" if nxt is not None else ""))
-    st.caption(f"Last worker run: {state.get('last_run_utc') or 'never'} · data: {state.get('last_source') or '-'}")
-    if state.get("last_error"):
-        st.warning(f"Worker's last error: {state['last_error']}")
-
-    LANE_ICON = {"RUNNING": "🟢 RUNNING", "PAUSED": "🟡 PAUSED", "STOPPED": "🔴 STOPPED"}
-
-    def close_lane_now(lane):
-        price = live_price or state.get("last_price")
-        if not price:
-            return None                                          # the trader closes them at its next candle
         fresh = STORE.read("state") or engine.new_state(S)
         n = engine.close_lane_trades(fresh, lane, float(price), pd.Timestamp.now(tz="UTC").isoformat(), "STOPPED")
         if n:
@@ -529,44 +392,35 @@ with tab_pnl:
     if note:
         st.success(note)
         del st.session_state["lane_note"]
-    col_w, col_t = st.columns(2)
-    for col, lane, title, sub in ((col_w, "window", "Window trading", "signals inside Tue–Thu 7–11pm IST"),
-                                  (col_t, "test", "Test trading", "signals at any other time")):
-        cur = S[f"{lane}_lane"]
-        with col:
-            st.markdown(f"**{title}** — {sub}  \n{LANE_ICON[cur]}")
-            b1, b2, b3 = st.columns(3)
-            if b1.button("▶ Start", key=f"{lane}_start", disabled=cur == "RUNNING", type="primary",
-                         help="Allow new trades in this lane."):
-                lane_set(lane, "RUNNING")
-            if b2.button("⏸ Pause", key=f"{lane}_pause", disabled=cur != "RUNNING",
-                         help="No new trades. Open trades keep running to their exit. The app stays awake."):
-                lane_set(lane, "PAUSED")
-            if b3.button("⏹ Stop", key=f"{lane}_stop", disabled=cur == "STOPPED",
-                         help="No new trades, and this lane's open trades are closed at the live price."):
-                lane_set(lane, "STOPPED")
+    cur = S["window_lane"]
+    st.markdown(f"**Window trading** — signals inside Tue–Thu 7–11pm IST, nothing outside it  \n{LANE_ICON[cur]}")
+    b1, b2, b3 = st.columns(3)
+    if b1.button("▶ Start", key="window_start", disabled=cur == "RUNNING", type="primary",
+                 help="Allow new trades inside the window."):
+        lane_set("window", "RUNNING")
+    if b2.button("⏸ Pause", key="window_pause", disabled=cur != "RUNNING",
+                 help="No new trades. An open trade keeps running to its exit. The app stays awake."):
+        lane_set("window", "PAUSED")
+    if b3.button("⏹ Stop", key="window_stop", disabled=cur == "STOPPED",
+                 help="No new trades, and the open trade is closed at the live price."):
+        lane_set("window", "STOPPED")
     awake = engine.needs_awake(S, state)
     if awake:
         st.info(f"The app stays awake: {awake}.")
     else:
-        st.success("😴 Both lanes are stopped with no open trades: the app stops pinging itself so Render can sleep "
+        st.success("😴 Trading is stopped with no open trade: the app stops pinging itself so Render can sleep "
                    "and save free instance hours. If it stays awake, an outside pinger (cron-job.org) is still calling it.")
-    st.caption("Start = new trades allowed · Pause = no new trades, open ones run on, app stays awake · "
-               "Stop = no new trades, open ones closed at the live price, app may sleep.")
+    st.caption("Start = new window trades allowed (and the newest signal is taken if it is fresh) · Pause = no new "
+               "trades, the open one runs on, app stays awake · Stop = no new trades, open trade closed at the live price.")
     def _res(kind, text):
         st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
 
-    if st.button("➕ Test trade now (follows the current signal)"):
+    if st.button("➕ Force trade now (bypasses the window and repeat rules)"):
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
         dsig = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
         if not data_ok or live_price is None:
             _res("error", "No live data available right now.")
-        elif S["window_lane" if in_win_now else "test_lane"] != "RUNNING":
-            _ln = "Window" if in_win_now else "Test"
-            _res("warning", f"{_ln} trading is {S['window_lane' if in_win_now else 'test_lane'].lower()} "
-                            f"(it's {'inside' if in_win_now else 'outside'} the Tue–Thu 7–11pm IST window). "
-                            f"Press ▶ Start under '{_ln} trading' first.")
         elif dsig.empty:
             _res("warning", "There is no directional signal in the loaded sample to follow.")
         else:
@@ -575,35 +429,36 @@ with tab_pnl:
             level_iso = last["level_time"].isoformat()
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
-                lane_for = "window" if in_win_now else "test"
+                lane_for = "window"
                 why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
-                                          level_iso, quote_currency, side, lane_for)
+                                          level_iso, quote_currency, side, lane_for, force=True)
                 if why:
                     hint = next((h for k, h in {
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
-                        "level already": "That signal's level already has an open trade. Wait for it to close or for a new signal.",
-                        "already in a": "This lane already holds a position in that direction. It flips only when the opposite signal arrives.",
-                        "max open": "Raise 'Max open trades' in Settings, or wait for a trade to close.",
                         "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
                         if why.startswith(k)), "")
                     _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
-                                    "(A test only bypasses the timing window, not your other rules.)")
+                                    "(Force bypasses the window and repeat rules only.)")
                 else:
                     item = engine.build_trade(
                         fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
                         bool(last["level_invalidated"]), level_iso, last["level_price"],
                         chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
-                        data_source, "WINDOW" if in_win_now else "TEST", "manual")
+                        data_source, "WINDOW", "manual")
+                    if not in_win_now:                       # forced outside hours: no 11pm close applies
+                        item["window_end"] = None
                     flipped = (engine.close_opposite(fresh, lane_for, side, float(live_price), now_t.isoformat())
                                if engine.is_single(S) else 0)
                     fresh["next_id"] += 1
+                    fresh["signal_state"] = {"active_side": side, "last_traded_event": last["event_time"].isoformat(),
+                                             "last_entry_time": now_t.isoformat(), "last_level_time": level_iso}
                     fresh["trades"].append(item)
                     fresh["signals"].append({
                         "event_time": last["event_time"].isoformat(), "pattern": last["pattern"],
                         "side": SIDE_LABEL[side], "price": float(live_price),
                         "origin_direction": last["origin_direction"], "level_invalidated": bool(last["level_invalidated"]),
-                        "in_trade_window": bool(in_win_now), "source": data_source, "action": "TRADED (manual test)"})
+                        "in_trade_window": bool(in_win_now), "source": data_source, "action": "TRADED (forced)"})
                     STORE.write("state", fresh)
                     read_key.clear()
                     state = fresh
@@ -633,11 +488,8 @@ with tab_pnl:
         rows.append(("Settings loaded from storage", "✅" if saved_cfg else "⚠️",
                      "saved settings found" if saved_cfg else "nothing saved yet: defaults are in use"))
         win_now = in_trade_window(now_u)
-        ln = "window" if win_now else "test"
-        other = "test" if win_now else "window"
-        rows.append(("Lane for right now", "✅" if S[f"{ln}_lane"] == "RUNNING" else "❌",
-                     f"{'inside' if win_now else 'outside'} the window → {ln} lane is {S[f'{ln}_lane']} "
-                     f"(the {other} lane is {S[f'{other}_lane']})"))
+        rows.append(("Trading window right now", "✅" if win_now else "ℹ️",
+                     f"{'inside' if win_now else 'outside'} Tue–Thu 19:00–23:00 IST · trading is {S['window_lane']}"))
         rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "
                      f"TP/SL {S['tp_pct']}%/{S['sl_pct']}% · lot ${S['lot_usd']:,.0f}"))
         rows.append(("Rules THIS PAGE uses", "✅" if rules_mode == S["rules_mode"] else "⚠️",
@@ -653,19 +505,17 @@ with tab_pnl:
                          f"{SIDE_LABEL[int(ls['signal_side'])]} · {ls['pattern'].replace(' (candidate)', '')} · "
                          f"{ls['event_time'].tz_convert(IST).strftime('%a %d %b %H:%M IST')} · {ago_c} candle(s) ago · "
                          f"origin {ls['origin_direction']} · level invalidated: {bool(ls['level_invalidated'])}"))
-            opens = [t for t in state.get("trades", []) if t["status"] == "OPEN"]
-            lv = ls["level_time"].isoformat()
             checks = [
                 ("Origin filter", S["allowed_origins"] == "Both" or ls["origin_direction"] == S["allowed_origins"],
                  f"set to '{S['allowed_origins']}'"),
                 ("'Skip events that invalidate their level'", not (S["skip_invalidated_events"] and bool(ls["level_invalidated"])),
                  f"{'ticked' if S['skip_invalidated_events'] else 'not ticked'}; this signal {'does' if ls['level_invalidated'] else 'does not'} end its level"),
-                *([("Position rule", not any(t["side_num"] == int(ls["signal_side"]) for t in opens if engine.lane_of(t) == ("window" if win_now else "test")),
-                    f"single-position mode: same direction in this lane blocks, the opposite direction flips ({sum(1 for t in opens if engine.lane_of(t) == ('window' if win_now else 'test'))} open in the lane)")]
-                  if engine.is_single(S) else
-                  [("Max open trades", len(opens) < S["max_open"], f"{len(opens)} open of max {S['max_open']}"),
-                   ("One open trade per level", not any(t["level_time"] == lv for t in opens),
-                    "that level already has an open trade" if any(t["level_time"] == lv for t in opens) else "free")]),
+                ("Origin direction", bool(S["allow_counter_origin"]) or
+                 engine.ORIGIN_SIDE.get(ls["origin_direction"]) == int(ls["signal_side"]),
+                 f"signal is {SIDE_LABEL[int(ls['signal_side'])]}, level origin is {ls['origin_direction']}"
+                 + (" · counter-origin breakouts allowed" if S["allow_counter_origin"] else "")),
+                ("Repeat direction", int((state.get("signal_state") or {}).get("active_side", 0)) != int(ls["signal_side"]),
+                 f"last traded side: {SIDE_LABEL.get(int((state.get('signal_state') or {}).get('active_side', 0)), 'none')}"),
                 ("Data currency", engine.usd_ok(S, quote_currency), f"data is {quote_currency}"),
             ]
             for name, passed, detail in checks:
@@ -674,10 +524,11 @@ with tab_pnl:
         for x in recent:
             rows.append(("Trader's recent decision", "ℹ️", f"{x['side']} {x['pattern'].replace(' (candidate)', '')} → {x['action']}"))
         st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
-        st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason Test trade now (and the automatic trader) skips the newest signal.")
-    st.caption("A test trade is placed instantly when the window is open or test mode is started. It uses your Demo "
-               "trader settings (lot, TP/SL, fee, filters, max open trades).")
-    mode = st.radio("Show", ["All", "WINDOW", "TEST"], horizontal=True)
+        st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the automatic trader skips "
+               "the newest signal (the Force button bypasses the window and repeat rules, not the data one).")
+    st.caption("Force trade places one trade immediately at the live price, outside the window too, and flips an "
+               "opposite position first. It still uses your lot, TP/SL, fee and data-currency rules.")
+    mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
     a1.metric("Equity (USD)", f"{sm['equity']:,.2f}", f"{sm['equity'] - sm['initial']:+,.4f}")
@@ -715,8 +566,7 @@ with tab_act:
     st.subheader("Trades")
     td = engine.trades_df(state, "All")
     if td.empty:
-        st.caption("No trades yet. Trades appear here once the worker sees a signal "
-                   "(inside the window, or anytime with Test mode on).")
+        st.caption("No trades yet. Trades appear here once the worker sees a signal inside the trading window.")
     else:
         td = td.sort_values("entry_time", ascending=False).copy()
         td["entry_ist"] = ist_str(td["entry_time"])
@@ -790,18 +640,17 @@ with tab_set:
         tp_pct = c1.number_input("Take-profit (%)", 0.05, 10.0, float(S["tp_pct"]), 0.05)
         sl_pct = c2.number_input("Stop-loss (%)", 0.05, 10.0, float(S["sl_pct"]), 0.05)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
-        max_open = c2.number_input("Max open trades (multiple-trades mode only)", 1, 20, int(S["max_open"]), 1)
-        pm_opts = ["Single position (flip on opposite signal)", "Multiple trades (independent)"]
-        position_mode = st.selectbox("Position mode", pm_opts,
-                                     index=pm_opts.index(S["position_mode"]) if S["position_mode"] in pm_opts else 0)
-        max_hold_bars = st.number_input("Max holding candles (0 = hold until TP/SL or the opposite signal)", 0, 500,
-                                        int(S["max_hold_bars"]), 1)
-        close_end = st.checkbox("Close window trades at 11:00pm IST (whether in profit or loss)",
-                                value=bool(S["close_at_window_end"]))
-        st.caption("Start / Pause / Stop for window and test trading are on the Live P&L tab.")
+        max_hold_bars = st.number_input("Max holding candles (0 = hold until TP/SL, the 11pm close or the opposite signal)",
+                                        0, 500, int(S["max_hold_bars"]), 1)
+        st.caption("One position only: it flips on the opposite signal and closes at 11:00pm IST either way. "
+                   "Start / Pause / Stop are on the Live P&L tab.")
         origins = ["Both", "Bullish", "Bearish"]
         allowed_origins = st.selectbox("Only trade levels with origin direction", origins,
                                        index=origins.index(S["allowed_origins"]))
+        allow_counter = st.checkbox("Also take breakouts that go against the level's origin direction",
+                                    value=bool(S["allow_counter_origin"]),
+                                    help="Off: only signals that agree with the impulse that created the level. "
+                                         "On: breakout patterns can also trade against it.")
         skip_inv = st.checkbox("Skip events that invalidate their level (breakout events)",
                                value=bool(S["skip_invalidated_events"]))
         allow_usd = st.checkbox("Allow trading on USD fallback data (Coinbase/Kraken)",
@@ -814,8 +663,8 @@ with tab_set:
         try:
             new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
             new.update(lot_usd=lot_usd, initial_balance=initial_balance, tp_pct=tp_pct, sl_pct=sl_pct,
-                       fee_pct=fee_pct, max_open=int(max_open), position_mode=position_mode, max_hold_bars=int(max_hold_bars), close_at_window_end=close_end,
-                       allowed_origins=allowed_origins,
+                       fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
+                       allowed_origins=allowed_origins, allow_counter_origin=allow_counter,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
                        sleep_outside_window=sleep_outside)
             if use_sidebar:
@@ -826,7 +675,7 @@ with tab_set:
         except Exception as exc:                                # noqa: BLE001
             st.error(f"Could not save settings: {type(exc).__name__}")
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
-               f"provider {S['provider']} · {'flip on opposite signal' if engine.is_single(S) else 'multiple trades'} · "
+               f"provider {S['provider']} · one position, flips on the opposite signal · "
                f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · TP/SL {S['tp_pct']}% / {S['sl_pct']}% · lot ${S['lot_usd']:,.0f}")
 
     with st.expander("Reset demo account"):
