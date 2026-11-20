@@ -7,11 +7,12 @@ Rules
     direction matches the level's origin direction (bullish impulse -> BUY, bearish ->
     SELL). `allow_counter_origin` lifts that rule for breakout patterns.
   * One position at a time. A repeat of the last traded direction is skipped, whether a
-    position is open or was closed by TP/SL; the opposite direction flips the position at
-    the new signal's price, win or lose (exit reason REVERSED), and opens the other side.
+    position is open or was closed; the opposite direction flips the position at the new
+    signal's price, win or lose (exit reason REVERSED), and opens the other side.
   * Entry at the signal candle's close (or at the live price for a startup catch-up and
-    the Force button). Fixed notional per trade (lot_usd), TP/SL percent from entry; SL
-    wins if both are hit in one candle; optional max_hold_bars time exit.
+    the Force button). Fixed notional per trade (lot_usd). There is no stop-loss or
+    take-profit: a trade runs until the opposite signal, the 23:00 IST close, a manual
+    Stop, or the optional max_hold_bars time exit.
   * Every window trade is closed at 23:00 IST, profit or loss, if still open.
   * The window lane is RUNNING / PAUSED / STOPPED. PAUSED = no new entries, open trades
     keep running. STOPPED = no new entries and open trades are closed at the latest price.
@@ -27,7 +28,7 @@ import signals
 from signals import INTERVAL_MIN, SIDE_LABEL, in_trade_window
 
 DEFAULT_SETTINGS = dict(
-    initial_balance=5000.0, lot_usd=20.0, tp_pct=0.5, sl_pct=0.5, fee_pct=0.0,
+    initial_balance=5000.0, lot_usd=20.0, fee_pct=0.0,
     window_lane="RUNNING", test_lane="STOPPED", sleep_outside_window=False,   # test_lane: legacy TEST trades only
     max_hold_bars=0,
     allow_usd_fallback=False, allowed_origins="Both", allow_counter_origin=False,
@@ -42,6 +43,8 @@ DEFAULT_SETTINGS = dict(
 def merge_settings(saved):
     saved = dict(saved or {})
     saved.pop("test_mode", None)                      # old on/off switch, replaced by the window lane
+    saved.pop("tp_pct", None)                         # SL/TP exits were removed: hold until the flip or 23:00 IST
+    saved.pop("sl_pct", None)
     saved["test_lane"] = "STOPPED"                    # outside-window trading no longer exists
     if saved and "rules_mode" not in saved:        # settings saved before the rules switch existed:
         saved.pop("cooldown_bars", None)           # use the current defaults for the cooldown/confirm settings
@@ -100,15 +103,7 @@ def _process_exits(state, closed, iv):
         if h > 0:
             after = after.head(h)
         for k, row in enumerate(after.itertuples(index=False), start=1):
-            if t["side_num"] > 0:
-                sl_hit, tp_hit = row.low <= t["sl"], row.high >= t["tp"]
-            else:
-                sl_hit, tp_hit = row.high >= t["sl"], row.low <= t["tp"]
-            if sl_hit:
-                price, reason = t["sl"], "SL"
-            elif tp_hit:
-                price, reason = t["tp"], "TP"
-            elif wend is not None and row.open_time + iv >= wend:
+            if wend is not None and row.open_time + iv >= wend:
                 price, reason = float(row.close), "WINDOW_END"
             elif h > 0 and k >= h:
                 price, reason = float(row.close), "TIME"
@@ -197,7 +192,6 @@ def _window_end_iso(entry_time_iso):
 
 def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso, level_price,
                 event_open_time_iso, entry_time_iso, entry, source, mode, trigger="auto"):
-    tp_f, sl_f = s["tp_pct"] / 100.0, s["sl_pct"] / 100.0
     return {
         "id": trade_id, "uid": uuid.uuid4().hex[:10], "status": "OPEN", "mode": mode, "trigger": trigger,
         "side": SIDE_LABEL[side], "side_num": side, "pattern": pattern,
@@ -205,7 +199,6 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
         "level_time": level_time_iso, "level_price": float(level_price),
         "event_open_time": event_open_time_iso, "entry_time": entry_time_iso,
         "entry_price": float(entry), "lot_usd": float(s["lot_usd"]), "qty": s["lot_usd"] / entry,
-        "tp": entry * (1 + side * tp_f), "sl": entry * (1 - side * sl_f),
         "horizon": int(s["max_hold_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
         "window_end": _window_end_iso(entry_time_iso) if mode == "WINDOW" else None,
     }

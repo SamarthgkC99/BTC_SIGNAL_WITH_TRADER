@@ -23,12 +23,14 @@ Trading rules (all editable in Settings)
     breakout is counter-origin, so that switch is the only way they trade.
   * One position, skip repeats. The trader holds a single position. A signal in the same
     direction as the last trade it took is skipped, whether that trade is still open or was
-    closed by TP/SL. The set of skip reasons is shown in "Why isn't it trading?".
+    closed by the opposite signal or the 23:00 IST close. The set of skip reasons is shown in
+    "Why isn't it trading?".
   * Flip on the opposite signal. An opposite signal closes the open position at that signal's
     price, win or lose (exit reason REVERSED), and immediately opens the other side.
   * Sizing and exits. Entry at the signal candle's close (live price for a startup catch-up and
-    the Force button). Lot $20 notional, initial balance $5,000, TP 0.5% / SL 0.5%; SL wins if
-    both are inside one candle; optional time exit (Max holding candles, default none).
+    the Force button). Lot $20 notional, initial balance $5,000. There is no stop-loss and no
+    take-profit: a position is held until the opposite signal, the 23:00 IST close, a manual
+    Stop, or the optional time exit (Max holding candles, default none).
     Fees default 0 (simulated setting).
   * Start now = trade now. On startup, or when Start is pressed inside the window, the trader
     takes the newest signal if it is at most 2 candles old and passes the rules. It never
@@ -50,7 +52,7 @@ Trader controls (Live P&L tab)
 Force trade now
   Places ONE trade instantly at the live price following the latest signal. It bypasses the
   window and the repeat-direction rules (that is what forcing means) and flips an opposite
-  position first, but still uses the lot, TP/SL, fee and data-currency rules. It is the only
+  position first, but still uses the lot, fee and data-currency rules. It is the only
   way to trade outside the window.
 
 Price provider (sidebar)

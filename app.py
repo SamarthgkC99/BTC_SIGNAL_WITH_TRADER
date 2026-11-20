@@ -491,7 +491,7 @@ with tab_pnl:
         rows.append(("Trading window right now", "✅" if win_now else "ℹ️",
                      f"{'inside' if win_now else 'outside'} Tue–Thu 19:00–23:00 IST · trading is {S['window_lane']}"))
         rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "
-                     f"TP/SL {S['tp_pct']}%/{S['sl_pct']}% · lot ${S['lot_usd']:,.0f}"))
+                     f"lot ${S['lot_usd']:,.0f}"))
         rows.append(("Rules THIS PAGE uses", "✅" if rules_mode == S["rules_mode"] else "⚠️",
                      f"{rules_mode} · cooldown {cooldown_bars}" + ("" if rules_mode == S["rules_mode"] else
                      " — differs from the trader; press 'Apply these study settings' in the sidebar")))
@@ -527,7 +527,7 @@ with tab_pnl:
         st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the automatic trader skips "
                "the newest signal (the Force button bypasses the window and repeat rules, not the data one).")
     st.caption("Force trade places one trade immediately at the live price, outside the window too, and flips an "
-               "opposite position first. It still uses your lot, TP/SL, fee and data-currency rules.")
+               "opposite position first. It still uses your lot, fee and data-currency rules.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
@@ -556,9 +556,9 @@ with tab_pnl:
         if price_for_pnl:
             opened["unrealized_usd"] = opened["qty"] * (price_for_pnl - opened["entry_price"]) * opened["side_num"]
         opened["entry_ist"] = ist_str(opened["entry_time"])
-        opened["closes_at_ist"] = [ist_str(pd.Series([pd.Timestamp(w)]))[0] if isinstance(w, str) and w else "TP/SL or flip"
+        opened["closes_at_ist"] = [ist_str(pd.Series([pd.Timestamp(w)]))[0] if isinstance(w, str) and w else "flip or Stop"
                                    for w in opened.get("window_end", [None] * len(opened))]
-        show_df(opened[["id", "mode", "side", "pattern", "entry_ist", "entry_price", "tp", "sl", "closes_at_ist", "unrealized_usd"]].round(4),
+        show_df(opened[["id", "mode", "side", "pattern", "entry_ist", "entry_price", "closes_at_ist", "unrealized_usd"]].round(4),
                 ["id", "side", "entry_price", "unrealized_usd"], compact)
 
 # ================================================================= ACTIVITY TAB
@@ -637,10 +637,8 @@ with tab_set:
         lot_usd = c1.number_input("Lot size (USD notional per trade)", 1.0, 100000.0, float(S["lot_usd"]), 1.0)
         initial_balance = c2.number_input("Initial balance (USD, applies on account reset)", 100.0, 10_000_000.0,
                                           float(S["initial_balance"]), 100.0)
-        tp_pct = c1.number_input("Take-profit (%)", 0.05, 10.0, float(S["tp_pct"]), 0.05)
-        sl_pct = c2.number_input("Stop-loss (%)", 0.05, 10.0, float(S["sl_pct"]), 0.05)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
-        max_hold_bars = st.number_input("Max holding candles (0 = hold until TP/SL, the 11pm close or the opposite signal)",
+        max_hold_bars = st.number_input("Max holding candles (0 = hold until the 11pm close or the opposite signal)",
                                         0, 500, int(S["max_hold_bars"]), 1)
         st.caption("One position only: it flips on the opposite signal and closes at 11:00pm IST either way. "
                    "Start / Pause / Stop are on the Live P&L tab.")
@@ -662,7 +660,7 @@ with tab_set:
     if saved:
         try:
             new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
-            new.update(lot_usd=lot_usd, initial_balance=initial_balance, tp_pct=tp_pct, sl_pct=sl_pct,
+            new.update(lot_usd=lot_usd, initial_balance=initial_balance,
                        fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
                        allowed_origins=allowed_origins, allow_counter_origin=allow_counter,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
@@ -676,7 +674,7 @@ with tab_set:
             st.error(f"Could not save settings: {type(exc).__name__}")
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
                f"provider {S['provider']} · one position, flips on the opposite signal · "
-               f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · TP/SL {S['tp_pct']}% / {S['sl_pct']}% · lot ${S['lot_usd']:,.0f}")
+               f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · lot ${S['lot_usd']:,.0f}")
 
     with st.expander("Reset demo account"):
         sure = st.checkbox("I understand this deletes all trades and restarts from the initial balance")
