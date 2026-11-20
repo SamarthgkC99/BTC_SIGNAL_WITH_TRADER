@@ -4,7 +4,7 @@
   * runs the paper-trading worker in a background thread (works even if nobody
     has the page open), and
   * pings the app's own public URL every 10 minutes while something needs it awake
-    (a running/paused lane or open trades); when both lanes are STOPPED it stops pinging so
+    (trading running/paused or an open trade); when trading is STOPPED it stops pinging so
     Render's free plan can sleep and save instance hours.
 """
 import os
