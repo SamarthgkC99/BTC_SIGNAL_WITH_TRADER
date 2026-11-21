@@ -149,7 +149,7 @@ def is_single(s):
 
 ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
-RULES_BUILD = "origin-side v5 2026-11-21"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "origin-side v6 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -195,12 +195,13 @@ def close_counter_origin(state, price, exit_time_iso, closed=None):
     return n
 
 
-def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window"):
-    """Trader rules, identical for automatic entries and for the Force-trade button.
+def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window",
+                 skip_repeat=False):
+    """Trader rules, shared by automatic entries and by the Force-trade button.
 
-    Nothing is bypassed: the origin filter, the origin direction, the level-invalidated filter,
-    the repeat-direction rule and the data-currency rule all apply to a manual trade too (the
-    timing window and the lane state are checked by the caller).
+    The origin filter, the origin direction, the level-invalidated filter and the data-currency
+    rule always apply. The repeat-direction rule is part of the automatism, so a manual click
+    (skip_repeat=True) does not get stopped by it; the caller checks the timing window and lane.
     """
     if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
         return f"origin filter ({s['allowed_origins']} only)"
@@ -208,7 +209,7 @@ def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None
         return "against the level's origin direction"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"
-    if side is not None:
+    if side is not None and not skip_repeat:
         prev = int((state.get("signal_state") or {}).get("active_side", 0))
         if prev == side:
             return f"same {SIDE_LABEL[side]} signal as the last trade (waiting for the opposite signal)"

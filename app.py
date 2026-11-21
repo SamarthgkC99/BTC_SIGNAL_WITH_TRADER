@@ -436,7 +436,7 @@ with tab_pnl:
                     why = f"trading is {S['window_lane'].lower()}"
                 else:
                     why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
-                                              level_iso, quote_currency, side, lane_for)
+                                              level_iso, quote_currency, side, lane_for, skip_repeat=True)
                 if why:
                     hint = next((h for k, h in {
                         "trading is": "Press ▶ Start to allow new trades, then Force again.",
@@ -445,8 +445,9 @@ with tab_pnl:
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
                         if why.startswith(k)), "")
                     _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
-                                    "(Force overrides the trading hours only — your click is that consent — and "
-                                    "nothing else, so the origin, repeat and filter rules still block it.)")
+                                    "(Force overrides the trading hours and the repeat-direction check — your "
+                                    "click is that consent — and nothing else, so the origin direction and your "
+                                    "settings filters still block it.)")
                 else:
                     item = engine.build_trade(
                         fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
@@ -536,14 +537,14 @@ with tab_pnl:
             rows.append(("Trader's recent decision", "ℹ️", f"{x['side']} {x['pattern'].replace(' (candidate)', '')} → {x['action']}"))
         st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
         st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the trader skips the "
-               "newest signal — the Force button is blocked by exactly the same lines, except the trading window, "
-               "which your click overrides.")
+               "newest signal — the Force button is blocked by the same lines, except the trading window and the "
+               "repeat-direction check, which your click overrides.")
     st.caption("A forced trade shows the trigger 'manual'; a worker trade shows 'auto' or 'startup'. "
                "Force trade places one trade immediately at the live price. Your click is the consent for one rule "
-               "only — the Tue–Thu 19:00–23:00 IST trading hours — so it trades outside the window too, and that "
-               "trade has no 23:00 close. Everything else still applies: trading must be RUNNING, the side comes "
-               "from the level's origin direction, your settings filters are checked, and it will not repeat the "
-               "last traded direction.")
+               "only — the Tue–Thu 19:00–23:00 IST trading hours and the repeat-direction check — so it trades "
+               "outside the window too, and that trade has no 23:00 close. Everything else still applies: trading "
+               "must be RUNNING, the side comes from the level's origin direction, and your settings filters are "
+               "checked.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
