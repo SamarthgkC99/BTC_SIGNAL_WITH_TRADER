@@ -149,7 +149,15 @@ def is_single(s):
 
 ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
-RULES_BUILD = "origin-side v6 2026-11-21"     # shown on the page so you can confirm which build is live
+
+def side_from_origin(origin):
+    """The trade side IS the level's origin direction shown in the event study:
+    Bullish level -> BUY, Bearish level -> SELL. 0 means the level has no usable origin
+    direction, and then there is NO trade — the pattern side is never used as a fallback."""
+    return ORIGIN_SIDE.get(str(origin).strip().title(), 0) if origin is not None else 0
+
+
+RULES_BUILD = "origin-side v7 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -203,6 +211,8 @@ def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None
     rule always apply. The repeat-direction rule is part of the automatism, so a manual click
     (skip_repeat=True) does not get stopped by it; the caller checks the timing window and lane.
     """
+    if side is not None and side == 0:
+        return "the level has no origin direction (not Bullish or Bearish), so no side can be traded"
     if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
         return f"origin filter ({s['allowed_origins']} only)"
     if side is not None and ORIGIN_SIDE.get(origin, 0) != side:
@@ -241,18 +251,20 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
 def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_override=None, trigger="auto"):
     # The level's origin direction is the trade direction (Bullish -> BUY, Bearish -> SELL).
     # The pattern only decides WHEN to trade; it never overrides the side.
-    side = ORIGIN_SIDE.get(ev["origin_direction"], int(ev["signal_side"]))
+    side = side_from_origin(ev["origin_direction"])
     close_ts = ev["event_time"] + iv
     in_win = in_trade_window(close_ts)
     level_iso = pd.Timestamp(ev["level_time"]).isoformat()
     sig = {
-        "event_time": ev["event_time"].isoformat(), "pattern": ev["pattern"], "side": SIDE_LABEL[side],
+        "event_time": ev["event_time"].isoformat(), "pattern": ev["pattern"], "side": SIDE_LABEL.get(side, "none"),
         "price": float(ev["event_price"]), "origin_direction": ev["origin_direction"],
         "level_invalidated": bool(ev["level_invalidated"]), "in_trade_window": bool(in_win),
         "source": source, "trigger": trigger, "action": "",
     }
     age = (latest_open - ev["event_time"]) / iv
-    if not in_win:
+    if side == 0:
+        reason = "the level has no origin direction (not Bullish or Bearish)"
+    elif not in_win:
         reason = "outside the Tue-Thu 19:00-23:00 IST trading window"
     elif s["window_lane"] != "RUNNING":
         reason = f"trading is {s['window_lane'].lower()}"

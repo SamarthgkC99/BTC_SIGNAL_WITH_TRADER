@@ -229,7 +229,7 @@ with tab_study:
         if not directional.empty:
             last = directional.iloc[-1]
             ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / iv_td)
-            label = SIDE_LABEL[engine.ORIGIN_SIDE.get(last["origin_direction"], int(last["signal_side"]))]
+            label = SIDE_LABEL.get(engine.side_from_origin(last["origin_direction"])) or "no origin"
             when = last["event_time"].tz_convert(IST).strftime("%a %d %b %H:%M IST")
             took = in_trade_window(last["event_close_time"])
             what = {"Strong close above level (candidate)": "closed strongly above",
@@ -322,9 +322,12 @@ with tab_study:
                              horizontal=True)
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
                  else v.sort_values("event_time", ascending=False))
+            v["trade_side_by_origin"] = v["origin_direction"].map(
+                lambda o: SIDE_LABEL.get(engine.side_from_origin(o)) or "none")
             v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
             v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
-            cols = ["level_id", "level_time", "level_price", "origin_direction", "event_time", "event_price",
+            cols = ["level_id", "level_time", "level_price", "origin_direction", "trade_side_by_origin",
+                    "event_time", "event_price",
                     "pattern", "signal", "forward_close_change_pct", "future_high_excursion_pct",
                     "future_low_excursion_pct", "level_invalidated",
                     "trade", "in_trade_window", "signal_side", "fwd_return_dir_pct",
@@ -425,14 +428,16 @@ with tab_pnl:
             _res("warning", "There is no directional signal in the loaded sample to follow.")
         else:
             last = dsig.iloc[-1]
-            side = engine.ORIGIN_SIDE.get(last["origin_direction"], int(last["signal_side"]))
+            side = engine.side_from_origin(last["origin_direction"])
             level_iso = last["level_time"].isoformat()
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
                 lane_for = "window"
                 # Your click is the consent for the ONE rule a manual test may break: the trading hours.
                 # Everything else (origin direction, repeat direction, your filters) still applies.
-                if S["window_lane"] != "RUNNING":
+                if side == 0:
+                    why = "the level has no origin direction (not Bullish or Bearish)"
+                elif S["window_lane"] != "RUNNING":
                     why = f"trading is {S['window_lane'].lower()}"
                 else:
                     why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
@@ -440,6 +445,8 @@ with tab_pnl:
                 if why:
                     hint = next((h for k, h in {
                         "trading is": "Press ▶ Start to allow new trades, then Force again.",
+                        "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
+                                                 "origin rule cannot pick a side. Wait for the next signal.",
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
                         "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
@@ -514,7 +521,7 @@ with tab_pnl:
             ls = dd.iloc[-1]
             ago_c = int((closed["open_time"].iloc[-1] - ls["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
             rows.append(("Latest directional signal", "ℹ️",
-                         f"{SIDE_LABEL[engine.ORIGIN_SIDE.get(ls['origin_direction'], int(ls['signal_side']))]} · "
+                         f"{SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'} · "
                          f"{ls['pattern'].replace(' (candidate)', '')} · "
                          f"{ls['event_time'].tz_convert(IST).strftime('%a %d %b %H:%M IST')} · {ago_c} candle(s) ago · "
                          f"origin {ls['origin_direction']} · level invalidated: {bool(ls['level_invalidated'])}"))
@@ -523,10 +530,10 @@ with tab_pnl:
                  f"set to '{S['allowed_origins']}'"),
                 ("'Skip events that invalidate their level'", not (S["skip_invalidated_events"] and bool(ls["level_invalidated"])),
                  f"{'ticked' if S['skip_invalidated_events'] else 'not ticked'}; this signal {'does' if ls['level_invalidated'] else 'does not'} end its level"),
-                ("Trade side (from the level origin)", True,
-                 f"level origin {ls['origin_direction']} -> trade {SIDE_LABEL[engine.ORIGIN_SIDE.get(ls['origin_direction'], int(ls['signal_side']))]}"
+                ("Trade side (from the level origin)", engine.side_from_origin(ls["origin_direction"]) != 0,
+                 f"level origin {ls['origin_direction']} -> trade {SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'}"
                  f" · the pattern ({ls['pattern'].replace(' (candidate)', '')}) only triggers it, it never sets the side"),
-                ("Repeat direction", int((state.get("signal_state") or {}).get("active_side", 0)) != int(ls["signal_side"]),
+                ("Repeat direction", int((state.get("signal_state") or {}).get("active_side", 0)) != engine.side_from_origin(ls["origin_direction"]),
                  f"last traded side: {SIDE_LABEL.get(int((state.get('signal_state') or {}).get('active_side', 0)), 'none')}"),
                 ("Data currency", engine.usd_ok(S, quote_currency), f"data is {quote_currency}"),
             ]

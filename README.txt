@@ -21,7 +21,10 @@ Trading rules (all editable in Settings)
     Historical event study table shows it: Bullish-origin level -> BUY, Bearish-origin level
     -> SELL. The event pattern only decides WHEN that trade happens; it never sets the side,
     so a bearish-origin level can never produce a BUY. This is absolute: there is no switch
-    for it and the Force button does not lift it.
+    for it and the Force button does not lift it. If a level has no Bullish/Bearish origin at
+    all, the trade is skipped - the pattern's own side is never used as a fallback, so a signal
+    can never sneak in as a BUY on a bearish setup. The event study shows the side the origin
+    gives each row in its trade_side_by_origin column.
   * One position, skip repeats. The trader holds a single position. A signal in the same
     direction as the last trade it took is skipped, whether that trade is still open or was
     closed by the opposite signal or the 23:00 IST close. The set of skip reasons is shown in
