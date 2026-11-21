@@ -157,7 +157,7 @@ def side_from_origin(origin):
     return ORIGIN_SIDE.get(str(origin).strip().title(), 0) if origin is not None else 0
 
 
-RULES_BUILD = "origin-side v7 2026-11-21"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "origin-side v8 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):

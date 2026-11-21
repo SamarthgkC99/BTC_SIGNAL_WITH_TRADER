@@ -322,17 +322,33 @@ with tab_study:
                              horizontal=True)
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
                  else v.sort_values("event_time", ascending=False))
+            _pick = events[events["signal_side"] != 0]
+            if not _pick.empty:
+                _pt = _pick["event_time"].max()
+                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this", "")
+            else:
+                v["trader_pick"] = ""
             v["trade_side_by_origin"] = v["origin_direction"].map(
                 lambda o: SIDE_LABEL.get(engine.side_from_origin(o)) or "none")
             v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
             v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
-            cols = ["level_id", "level_time", "level_price", "origin_direction", "trade_side_by_origin",
+            cols = ["trader_pick", "level_id", "level_time", "level_price", "origin_direction", "trade_side_by_origin",
                     "event_time", "event_price",
                     "pattern", "signal", "forward_close_change_pct", "future_high_excursion_pct",
                     "future_low_excursion_pct", "level_invalidated",
                     "trade", "in_trade_window", "signal_side", "fwd_return_dir_pct",
                     "favorable_excursion_pct", "adverse_excursion_pct"]
             view = v[cols].round(5)
+            if not _pick.empty:
+                _pk = _pick.iloc[-1]
+                st.caption(
+                    f"**Signal the trader uses** (newest by candle close, not the top row): "
+                    f"{SIDE_LABEL.get(engine.side_from_origin(_pk['origin_direction'])) or 'no side'} — level "
+                    f"{_pk['level_price']:,.2f}, origin {_pk['origin_direction']}, "
+                    f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
+                    f"level created {pd.Timestamp(_pk['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}. "
+                    f"The row marked '⬅ trader uses this' is the one; rows with no defined pattern are skipped, "
+                    f"and a column sort you clicked can show an older row at the top.")
             show_df(view)
             st.download_button("Download event-study CSV (IST)", data=view.to_csv(index=False).encode("utf-8"),
                                file_name="btc_momentum_level_events_ist.csv", mime="text/csv")
@@ -479,7 +495,9 @@ with tab_pnl:
                     state = fresh
                     ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
                     _res("success", f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following the "
-                               f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago."
+                               f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago — "
+                               f"level {last['level_price']:,.2f} (origin {last['origin_direction']})"
+                               f" = {SIDE_LABEL[side]}. Below is the level and origin the side came from."
                                + (f" It closed {flipped} opposite position(s) first." if flipped else "")
                                + ("" if in_win_now else " Forced outside the trading hours; it has no 23:00 close "
                                                        "and runs until the opposite signal, Stop, or the time exit."))
@@ -524,7 +542,9 @@ with tab_pnl:
                          f"{SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'} · "
                          f"{ls['pattern'].replace(' (candidate)', '')} · "
                          f"{ls['event_time'].tz_convert(IST).strftime('%a %d %b %H:%M IST')} · {ago_c} candle(s) ago · "
-                         f"origin {ls['origin_direction']} · level invalidated: {bool(ls['level_invalidated'])}"))
+                         f"origin {ls['origin_direction']} · level {ls['level_price']:,.2f} "
+                         f"(created {pd.Timestamp(ls['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}) · "
+                         f"level invalidated: {bool(ls['level_invalidated'])}"))
             checks = [
                 ("Origin filter", S["allowed_origins"] == "Both" or ls["origin_direction"] == S["allowed_origins"],
                  f"set to '{S['allowed_origins']}'"),
