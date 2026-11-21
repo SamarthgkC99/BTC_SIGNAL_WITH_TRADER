@@ -415,7 +415,7 @@ with tab_pnl:
     def _res(kind, text):
         st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
 
-    if st.button("➕ Force trade now (bypasses the window and repeat rules)"):
+    if st.button("➕ Force trade now (same rules as the trader)"):
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
         dsig = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
@@ -430,24 +430,30 @@ with tab_pnl:
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
                 lane_for = "window"
-                why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
-                                          level_iso, quote_currency, side, lane_for, force=True)
+                if not in_win_now:
+                    why = "outside the Tue-Thu 19:00-23:00 IST trading window"
+                elif S["window_lane"] != "RUNNING":
+                    why = f"trading is {S['window_lane'].lower()}"
+                else:
+                    why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
+                                              level_iso, quote_currency, side, lane_for)
                 if why:
                     hint = next((h for k, h in {
+                        "outside the Tue-Thu": "The Force button only trades inside the window, like the trader; "
+                                              "nothing bypasses the window.",
+                        "trading is": "Press ▶ Start to allow new trades, then Force again.",
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
                         "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
                         if why.startswith(k)), "")
                     _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
-                                    "(Force bypasses the window and repeat rules only, never the origin rule.)")
+                                    "(Force follows exactly the same rules as the trader; nothing is bypassed.)")
                 else:
                     item = engine.build_trade(
                         fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
                         bool(last["level_invalidated"]), level_iso, last["level_price"],
                         chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
                         data_source, "WINDOW", "manual")
-                    if not in_win_now:                       # forced outside hours: no 11pm close applies
-                        item["window_end"] = None
                     flipped = (engine.close_opposite(fresh, lane_for, side, float(live_price), now_t.isoformat())
                                if engine.is_single(S) else 0)
                     fresh["next_id"] += 1
@@ -526,12 +532,13 @@ with tab_pnl:
         for x in recent:
             rows.append(("Trader's recent decision", "ℹ️", f"{x['side']} {x['pattern'].replace(' (candidate)', '')} → {x['action']}"))
         st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
-        st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the automatic trader skips "
-               "the newest signal (the Force button bypasses the window and repeat rules, not the data one).")
+        st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the trader skips the "
+               "newest signal — the Force button is blocked by exactly the same lines.")
     st.caption("A forced trade shows the trigger 'manual'; a worker trade shows 'auto' or 'startup'. "
-               "Force trade places one trade immediately at the live price, outside the window too, and flips an "
-               "opposite position first. It still uses your lot, fee and data-currency rules, and it never trades "
-               "against the level's origin direction.")
+               "Force trade places one trade immediately at the live price, and it follows every rule the trader "
+               "does: inside the Tue–Thu 19:00–23:00 IST window, trading RUNNING, side from the level's origin "
+               "direction, unless the signal is filtered out by your settings, and unless it repeats the last "
+               "traded direction.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)

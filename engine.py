@@ -16,6 +16,8 @@ Rules
     take-profit: a trade runs until the opposite signal, the 23:00 IST close, a manual
     Stop, or the optional max_hold_bars time exit.
   * Every window trade is closed at 23:00 IST, profit or loss, if still open.
+  * The Force button is not an exception: an entry it places obeys the same window, lane,
+    origin, level-invalidated, repeat-direction and data-currency rules as the automatic trader.
   * The window lane is RUNNING / PAUSED / STOPPED. PAUSED = no new entries, open trades
     keep running. STOPPED = no new entries and open trades are closed at the latest price.
 Candles are processed in order, so a late or restarted worker never double-trades.
@@ -145,7 +147,7 @@ def is_single(s):
 
 ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
-RULES_BUILD = "origin-side v3 2026-11-21"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "origin-side v4 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -191,12 +193,12 @@ def close_counter_origin(state, price, exit_time_iso, closed=None):
     return n
 
 
-def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window", force=False):
-    """Trader rules shared by automatic and manual entries (the timing window is checked elsewhere).
+def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window"):
+    """Trader rules, identical for automatic entries and for the Force-trade button.
 
-    `force` is the Force-trade button: it bypasses the repeat-direction rule and the timing
-    window (that is what forcing means). The origin-alignment rule and the data-currency rule
-    are never bypassed.
+    Nothing is bypassed: the origin filter, the origin direction, the level-invalidated filter,
+    the repeat-direction rule and the data-currency rule all apply to a manual trade too (the
+    timing window and the lane state are checked by the caller).
     """
     if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
         return f"origin filter ({s['allowed_origins']} only)"
@@ -204,7 +206,7 @@ def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None
         return "against the level's origin direction"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"
-    if side is not None and not force:
+    if side is not None:
         prev = int((state.get("signal_state") or {}).get("active_side", 0))
         if prev == side:
             return f"same {SIDE_LABEL[side]} signal as the last trade (waiting for the opposite signal)"
