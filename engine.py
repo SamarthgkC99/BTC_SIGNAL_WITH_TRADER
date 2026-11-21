@@ -146,6 +146,8 @@ def is_single(s):
 
 ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
+RULES_BUILD = "origin-strict 2026-11-21"     # shown on the page so you can confirm which build is live
+
 
 def open_in_lane(state, lane):
     return [t for t in state["trades"] if t["status"] == "OPEN" and lane_of(t) == lane]
@@ -162,6 +164,30 @@ def close_opposite(state, lane, side, price, exit_time_iso, closed=None, upto_op
             seen = closed[(closed["open_time"] > pd.Timestamp(t["event_open_time"])) & (closed["open_time"] <= upto_open_time)]
             bars = len(seen)
         close_trade(t, price, "REVERSED", exit_time_iso, bars, seen)
+        n += 1
+    return n
+
+
+def close_counter_origin(state, price, exit_time_iso, closed=None):
+    """Close any open trade whose stored level origin points against its own side.
+
+    Such a trade can only come from a build that still allowed counter-origin entries (or a
+    forced entry from before the rule became absolute). The rule is now never bypassed, so
+    these positions are closed instead of left running.
+    """
+    n = 0
+    for t in state["trades"]:
+        side = int(t.get("side_num") or 0)
+        origin = t.get("origin_direction")
+        if t["status"] != "OPEN" or not origin or not side:
+            continue
+        if ORIGIN_SIDE.get(origin, side) == side:
+            continue
+        seen = None
+        if closed is not None and t.get("event_open_time"):
+            seen = closed[(closed["open_time"] > pd.Timestamp(t["event_open_time"]))
+                          & (closed["open_time"] <= pd.Timestamp(exit_time_iso))]
+        close_trade(t, price, "ORIGIN_FIX", exit_time_iso, None if seen is None else len(seen), seen)
         n += 1
     return n
 
@@ -275,6 +301,9 @@ def process(state, s, closed, events, source, quote, now=None):
     state.update(last_run_utc=now.isoformat(), last_source=source, last_quote=quote,
                  last_price=float(closed["close"].iloc[-1]), last_error=None)
     _process_exits(state, closed, iv)
+    fixed = close_counter_origin(state, float(closed["close"].iloc[-1]), (latest_open + iv).isoformat(), closed)
+    if fixed:                                             # never leave a counter-origin position running
+        print(f"[trader] closed {fixed} position(s) pointing against their level's origin", flush=True)
     for t in state["trades"]:                              # a STOPPED lane never keeps open trades
         if t["status"] == "OPEN" and s[f"{lane_of(t)}_lane"] == "STOPPED":
             close_trade(t, float(closed["close"].iloc[-1]), "STOPPED", (latest_open + iv).isoformat())

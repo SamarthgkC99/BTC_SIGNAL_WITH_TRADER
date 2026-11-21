@@ -490,6 +490,8 @@ with tab_pnl:
         win_now = in_trade_window(now_u)
         rows.append(("Trading window right now", "✅" if win_now else "ℹ️",
                      f"{'inside' if win_now else 'outside'} Tue–Thu 19:00–23:00 IST · trading is {S['window_lane']}"))
+        rows.append(("Rules build running", "ℹ️", engine.RULES_BUILD +
+                     " · a BUY can never follow a bearish-origin level"))
         rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "
                      f"lot ${S['lot_usd']:,.0f}"))
         rows.append(("Rules THIS PAGE uses", "✅" if rules_mode == S["rules_mode"] else "⚠️",
@@ -526,7 +528,8 @@ with tab_pnl:
         st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
         st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the automatic trader skips "
                "the newest signal (the Force button bypasses the window and repeat rules, not the data one).")
-    st.caption("Force trade places one trade immediately at the live price, outside the window too, and flips an "
+    st.caption("A forced trade shows the trigger 'manual'; a worker trade shows 'auto' or 'startup'. "
+               "Force trade places one trade immediately at the live price, outside the window too, and flips an "
                "opposite position first. It still uses your lot, fee and data-currency rules, and it never trades "
                "against the level's origin direction.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
@@ -559,9 +562,10 @@ with tab_pnl:
         opened["entry_ist"] = ist_str(opened["entry_time"])
         opened["closes_at_ist"] = [ist_str(pd.Series([pd.Timestamp(w)]))[0] if isinstance(w, str) and w else "flip or Stop"
                                    for w in opened.get("window_end", [None] * len(opened))]
-        show_df(opened[["id", "mode", "side", "pattern", "origin_direction", "entry_ist", "entry_price",
-                        "closes_at_ist", "unrealized_usd"]].round(4),
-                ["id", "side", "origin_direction", "entry_price", "unrealized_usd"], compact)
+        show_df(opened[["id", "mode", "trigger", "side", "pattern", "origin_direction", "level_price",
+                        "entry_ist", "entry_price", "closes_at_ist", "unrealized_usd"]].round(4),
+                ["id", "trigger", "side", "origin_direction", "level_price", "entry_price", "unrealized_usd"],
+                compact)
 
 # ================================================================= ACTIVITY TAB
 with tab_act:

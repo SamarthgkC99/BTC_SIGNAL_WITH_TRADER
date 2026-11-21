@@ -28,6 +28,9 @@ Trading rules (all editable in Settings)
     "Why isn't it trading?".
   * Flip on the opposite signal. An opposite signal closes the open position at that signal's
     price, win or lose (exit reason REVERSED), and immediately opens the other side.
+  * Bad-direction cleanup. If an open position's stored level origin points against its own
+    side (only possible from an older build or a force entry made before the rule was
+    absolute), the worker closes it at the latest price with exit reason ORIGIN_FIX.
   * Sizing and exits. Entry at the signal candle's close (live price for a startup catch-up and
     the Force button). Lot $20 notional, initial balance $5,000. There is no stop-loss and no
     take-profit: a position is held until the opposite signal, the 23:00 IST close, a manual
