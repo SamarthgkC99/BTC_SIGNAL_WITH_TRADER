@@ -54,12 +54,14 @@ Trader controls (Live P&L tab)
   pings only Tue-Thu ~18:30-23:30 IST uses roughly 65 instance hours a month instead of ~744.
 
 Force trade now
-  Places ONE trade instantly at the live price following the latest signal, under exactly the
-  same rules as the automatic trader: only inside Tue-Thu 19:00-23:00 IST, only while Window
-  trading is RUNNING, side from the level's origin direction, no repeat of the last traded
-  direction, your level-invalidated / origin-filter / data-currency settings all applied, and
-  an opposite position is flipped first. Nothing is bypassed, so pressing it outside the
-  window (or against the origin) is refused with the reason instead of placing a trade.
+  A manual test entry, so YOU are the consent for exactly one rule: the trading hours. It
+  places ONE trade instantly at the live price following the latest signal, inside or outside
+  Tue-Thu 19:00-23:00 IST, and a trade forced outside the hours has no 23:00 close (it runs
+  until the opposite signal, Stop, or the time exit). Every other rule still applies: Window
+  trading must be RUNNING, the side comes from the level's origin direction, the repeat
+  direction rule holds, and your level-invalidated / origin-filter / data-currency settings
+  are checked. An opposite position is flipped first. Anything blocked shows the reason and
+  places nothing.
 
 Price provider (sidebar)
   Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).

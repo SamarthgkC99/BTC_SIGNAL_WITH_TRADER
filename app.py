@@ -415,7 +415,7 @@ with tab_pnl:
     def _res(kind, text):
         st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
 
-    if st.button("➕ Force trade now (same rules as the trader)"):
+    if st.button("➕ Force trade now (trades outside the window too)"):
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
         dsig = events[events["signal_side"] != 0] if (data_ok and not events.empty) else pd.DataFrame()
@@ -430,30 +430,31 @@ with tab_pnl:
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
                 lane_for = "window"
-                if not in_win_now:
-                    why = "outside the Tue-Thu 19:00-23:00 IST trading window"
-                elif S["window_lane"] != "RUNNING":
+                # Your click is the consent for the ONE rule a manual test may break: the trading hours.
+                # Everything else (origin direction, repeat direction, your filters) still applies.
+                if S["window_lane"] != "RUNNING":
                     why = f"trading is {S['window_lane'].lower()}"
                 else:
                     why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
                                               level_iso, quote_currency, side, lane_for)
                 if why:
                     hint = next((h for k, h in {
-                        "outside the Tue-Thu": "The Force button only trades inside the window, like the trader; "
-                                              "nothing bypasses the window.",
                         "trading is": "Press ▶ Start to allow new trades, then Force again.",
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
                         "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
                         if why.startswith(k)), "")
                     _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
-                                    "(Force follows exactly the same rules as the trader; nothing is bypassed.)")
+                                    "(Force overrides the trading hours only — your click is that consent — and "
+                                    "nothing else, so the origin, repeat and filter rules still block it.)")
                 else:
                     item = engine.build_trade(
                         fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
                         bool(last["level_invalidated"]), level_iso, last["level_price"],
                         chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
                         data_source, "WINDOW", "manual")
+                    if not in_win_now:                 # forced outside hours: there is no 11pm close to wait for
+                        item["window_end"] = None
                     flipped = (engine.close_opposite(fresh, lane_for, side, float(live_price), now_t.isoformat())
                                if engine.is_single(S) else 0)
                     fresh["next_id"] += 1
@@ -471,7 +472,9 @@ with tab_pnl:
                     ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
                     _res("success", f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following the "
                                f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago."
-                               + (f" It closed {flipped} opposite position(s) first." if flipped else ""))
+                               + (f" It closed {flipped} opposite position(s) first." if flipped else "")
+                               + ("" if in_win_now else " Forced outside the trading hours; it has no 23:00 close "
+                                                       "and runs until the opposite signal, Stop, or the time exit."))
             except Exception as exc:                                        # noqa: BLE001
                 _res("error", f"Could not place the test trade: {type(exc).__name__}")
     res = st.session_state.get("test_result")
@@ -533,12 +536,14 @@ with tab_pnl:
             rows.append(("Trader's recent decision", "ℹ️", f"{x['side']} {x['pattern'].replace(' (candidate)', '')} → {x['action']}"))
         st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
         st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the trader skips the "
-               "newest signal — the Force button is blocked by exactly the same lines.")
+               "newest signal — the Force button is blocked by exactly the same lines, except the trading window, "
+               "which your click overrides.")
     st.caption("A forced trade shows the trigger 'manual'; a worker trade shows 'auto' or 'startup'. "
-               "Force trade places one trade immediately at the live price, and it follows every rule the trader "
-               "does: inside the Tue–Thu 19:00–23:00 IST window, trading RUNNING, side from the level's origin "
-               "direction, unless the signal is filtered out by your settings, and unless it repeats the last "
-               "traded direction.")
+               "Force trade places one trade immediately at the live price. Your click is the consent for one rule "
+               "only — the Tue–Thu 19:00–23:00 IST trading hours — so it trades outside the window too, and that "
+               "trade has no 23:00 close. Everything else still applies: trading must be RUNNING, the side comes "
+               "from the level's origin direction, your settings filters are checked, and it will not repeat the "
+               "last traded direction.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)

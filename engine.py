@@ -16,8 +16,10 @@ Rules
     take-profit: a trade runs until the opposite signal, the 23:00 IST close, a manual
     Stop, or the optional max_hold_bars time exit.
   * Every window trade is closed at 23:00 IST, profit or loss, if still open.
-  * The Force button is not an exception: an entry it places obeys the same window, lane,
-    origin, level-invalidated, repeat-direction and data-currency rules as the automatic trader.
+  * The Force button is a manual test entry: your click is the consent for the trading hours
+    only, so it may trade outside the window (and such a trade has no 23:00 close). Every other
+    rule still applies: lane RUNNING, origin direction, level-invalidated, repeat direction and
+    data currency.
   * The window lane is RUNNING / PAUSED / STOPPED. PAUSED = no new entries, open trades
     keep running. STOPPED = no new entries and open trades are closed at the latest price.
 Candles are processed in order, so a late or restarted worker never double-trades.
@@ -147,7 +149,7 @@ def is_single(s):
 
 ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
-RULES_BUILD = "origin-side v4 2026-11-21"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "origin-side v5 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
