@@ -306,7 +306,7 @@ with tab_study:
 - **Rejection:** wick/body ratio, candle direction and close location meet the thresholds.
 {RULE_LINES}
 - **Direction-adjusted columns:** `fwd_return_dir_pct`, `favorable_excursion_pct`, `adverse_excursion_pct` flip the sign for SELL signals. The raw `future_*` columns are kept as-is.
-- **`origin_direction` vs `signal`:** `origin_direction` is the direction of the candle that created the level. `signal` (BUY/SELL) comes from the pattern: a breakout always goes against its level's origin, so a SELL after a break below a Bullish-origin level is expected.
+- **`origin_direction` vs `signal`:** `origin_direction` is the direction of the candle that created the level. `signal` (BUY/SELL) comes from the pattern: a breakout always goes against its level's origin, so a SELL after a break below a Bullish-origin level is expected. The trader only takes signals that agree with the origin, so those counter-origin breakouts are always skipped.
 - **`trade` column:** BUY/SELL if the signal falls inside Tue–Thu 7–11pm IST, otherwise "signal only". `future_*` columns are measured after the signal, so they are analysis only, never an entry condition.
 """.replace("{RULE_LINES}", LEGACY_LINES if legacy else IMPROVED_LINES))
 
@@ -439,7 +439,7 @@ with tab_pnl:
                         "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
                         if why.startswith(k)), "")
                     _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
-                                    "(Force bypasses the window and repeat rules only.)")
+                                    "(Force bypasses the window and repeat rules only, never the origin rule.)")
                 else:
                     item = engine.build_trade(
                         fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
@@ -510,10 +510,10 @@ with tab_pnl:
                  f"set to '{S['allowed_origins']}'"),
                 ("'Skip events that invalidate their level'", not (S["skip_invalidated_events"] and bool(ls["level_invalidated"])),
                  f"{'ticked' if S['skip_invalidated_events'] else 'not ticked'}; this signal {'does' if ls['level_invalidated'] else 'does not'} end its level"),
-                ("Origin direction", bool(S["allow_counter_origin"]) or
-                 engine.ORIGIN_SIDE.get(ls["origin_direction"]) == int(ls["signal_side"]),
+                ("Origin direction", engine.ORIGIN_SIDE.get(ls["origin_direction"]) == int(ls["signal_side"]),
                  f"signal is {SIDE_LABEL[int(ls['signal_side'])]}, level origin is {ls['origin_direction']}"
-                 + (" · counter-origin breakouts allowed" if S["allow_counter_origin"] else "")),
+                 + (" · this signal is counter-origin, so it is never taken"
+                    if engine.ORIGIN_SIDE.get(ls["origin_direction"]) != int(ls["signal_side"]) else "")),
                 ("Repeat direction", int((state.get("signal_state") or {}).get("active_side", 0)) != int(ls["signal_side"]),
                  f"last traded side: {SIDE_LABEL.get(int((state.get('signal_state') or {}).get('active_side', 0)), 'none')}"),
                 ("Data currency", engine.usd_ok(S, quote_currency), f"data is {quote_currency}"),
@@ -527,7 +527,8 @@ with tab_pnl:
         st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the automatic trader skips "
                "the newest signal (the Force button bypasses the window and repeat rules, not the data one).")
     st.caption("Force trade places one trade immediately at the live price, outside the window too, and flips an "
-               "opposite position first. It still uses your lot, fee and data-currency rules.")
+               "opposite position first. It still uses your lot, fee and data-currency rules, and it never trades "
+               "against the level's origin direction.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
@@ -558,8 +559,9 @@ with tab_pnl:
         opened["entry_ist"] = ist_str(opened["entry_time"])
         opened["closes_at_ist"] = [ist_str(pd.Series([pd.Timestamp(w)]))[0] if isinstance(w, str) and w else "flip or Stop"
                                    for w in opened.get("window_end", [None] * len(opened))]
-        show_df(opened[["id", "mode", "side", "pattern", "entry_ist", "entry_price", "closes_at_ist", "unrealized_usd"]].round(4),
-                ["id", "side", "entry_price", "unrealized_usd"], compact)
+        show_df(opened[["id", "mode", "side", "pattern", "origin_direction", "entry_ist", "entry_price",
+                        "closes_at_ist", "unrealized_usd"]].round(4),
+                ["id", "side", "origin_direction", "entry_price", "unrealized_usd"], compact)
 
 # ================================================================= ACTIVITY TAB
 with tab_act:
@@ -645,10 +647,6 @@ with tab_set:
         origins = ["Both", "Bullish", "Bearish"]
         allowed_origins = st.selectbox("Only trade levels with origin direction", origins,
                                        index=origins.index(S["allowed_origins"]))
-        allow_counter = st.checkbox("Also take breakouts that go against the level's origin direction",
-                                    value=bool(S["allow_counter_origin"]),
-                                    help="Off: only signals that agree with the impulse that created the level. "
-                                         "On: breakout patterns can also trade against it.")
         skip_inv = st.checkbox("Skip events that invalidate their level (breakout events)",
                                value=bool(S["skip_invalidated_events"]))
         allow_usd = st.checkbox("Allow trading on USD fallback data (Coinbase/Kraken)",
@@ -662,7 +660,7 @@ with tab_set:
             new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
             new.update(lot_usd=lot_usd, initial_balance=initial_balance,
                        fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
-                       allowed_origins=allowed_origins, allow_counter_origin=allow_counter,
+                       allowed_origins=allowed_origins,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
                        sleep_outside_window=sleep_outside)
             if use_sidebar:

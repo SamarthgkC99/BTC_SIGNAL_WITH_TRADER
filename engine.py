@@ -3,9 +3,12 @@
 Rules
   * Only the historical study's trading window is traded: Tue/Wed/Thu 19:00-23:00 IST,
     judged by the signal candle's close time. Signals outside it are logged and skipped.
-  * BUY on bullish signals and SELL (short) on bearish ones, but only when the signal's
+  * BUY on bullish signals and SELL (short) on bearish ones, and only when the signal's
     direction matches the level's origin direction (bullish impulse -> BUY, bearish ->
-    SELL). `allow_counter_origin` lifts that rule for breakout patterns.
+    SELL). The rule is absolute: no setting and not even the Force button lifts it, so a
+    BUY can never follow a bearish-origin level. With the Improved rules every "strong
+    close" breakout is counter-origin, which means breakouts are always skipped and only
+    rejections at the level can trade.
   * One position at a time. A repeat of the last traded direction is skipped, whether a
     position is open or was closed; the opposite direction flips the position at the new
     signal's price, win or lose (exit reason REVERSED), and opens the other side.
@@ -31,7 +34,7 @@ DEFAULT_SETTINGS = dict(
     initial_balance=5000.0, lot_usd=20.0, fee_pct=0.0,
     window_lane="RUNNING", test_lane="STOPPED", sleep_outside_window=False,   # test_lane: legacy TEST trades only
     max_hold_bars=0,
-    allow_usd_fallback=False, allowed_origins="Both", allow_counter_origin=False,
+    allow_usd_fallback=False, allowed_origins="Both",
     skip_invalidated_events=False, max_signal_age_bars=2,
     provider="Auto (fallback chain)", provider_fallback=True,
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
@@ -45,6 +48,7 @@ def merge_settings(saved):
     saved.pop("test_mode", None)                      # old on/off switch, replaced by the window lane
     saved.pop("tp_pct", None)                         # SL/TP exits were removed: hold until the flip or 23:00 IST
     saved.pop("sl_pct", None)
+    saved.pop("allow_counter_origin", None)            # counter-origin trades are no longer possible
     saved["test_lane"] = "STOPPED"                    # outside-window trading no longer exists
     if saved and "rules_mode" not in saved:        # settings saved before the rules switch existed:
         saved.pop("cooldown_bars", None)           # use the current defaults for the cooldown/confirm settings
@@ -165,13 +169,13 @@ def close_opposite(state, lane, side, price, exit_time_iso, closed=None, upto_op
 def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window", force=False):
     """Trader rules shared by automatic and manual entries (the timing window is checked elsewhere).
 
-    `force` is the Force-trade button: it bypasses the origin-alignment and repeat-direction
-    rules (that is what forcing means) but never the data-currency rule.
+    `force` is the Force-trade button: it bypasses the repeat-direction rule and the timing
+    window (that is what forcing means). The origin-alignment rule and the data-currency rule
+    are never bypassed.
     """
     if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
         return f"origin filter ({s['allowed_origins']} only)"
-    if side is not None and not force and not s.get("allow_counter_origin") \
-            and ORIGIN_SIDE.get(origin, 0) != side:
+    if side is not None and ORIGIN_SIDE.get(origin, 0) != side:
         return "against the level's origin direction"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"

@@ -18,9 +18,10 @@ Trading rules (all editable in Settings)
     23:00 IST, profit or loss (exit reason WINDOW_END).
   * Origin direction. BUY only when the level's originating impulse was bullish, SELL only when
     it was bearish. A signal pointing against its level's origin is skipped ("against the
-    level's origin direction"). Ticking "Also take breakouts that go against the level's origin
-    direction" lifts this for breakout patterns. Under Improved rules every "strong close"
-    breakout is counter-origin, so that switch is the only way they trade.
+    level's origin direction"). This rule is absolute: there is no switch for it and the Force
+    button does not lift it, so a BUY is never taken on a bearish-origin level. Under Improved
+    rules every "strong close" breakout is counter-origin, so breakouts are always skipped and
+    only rejections at the level can trade.
   * One position, skip repeats. The trader holds a single position. A signal in the same
     direction as the last trade it took is skipped, whether that trade is still open or was
     closed by the opposite signal or the 23:00 IST close. The set of skip reasons is shown in
@@ -52,7 +53,8 @@ Trader controls (Live P&L tab)
 Force trade now
   Places ONE trade instantly at the live price following the latest signal. It bypasses the
   window and the repeat-direction rules (that is what forcing means) and flips an opposite
-  position first, but still uses the lot, fee and data-currency rules. It is the only
+  position first, but still uses the lot, fee, data-currency and level-origin rules. If the
+  latest signal points against its level's origin it is refused, not placed. It is the only
   way to trade outside the window.
 
 Price provider (sidebar)
