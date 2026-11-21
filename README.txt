@@ -58,7 +58,9 @@ Trader controls (Live P&L tab)
 
 Force trade now
   A manual test entry, so YOU are the consent for the two things a human click decides: the
-  trading hours and the repeat-direction check. It places ONE trade instantly at the live
+  trading hours and the repeat-direction check. Freshness is NOT optional: only a signal at
+  most max_signal_age_bars candles old (2 by default) can be traded, by the button or by the
+  worker, so a click can never enter on yesterday's move. The button reports the age it saw. It places ONE trade instantly at the live
   price following the latest signal, inside or outside Tue-Thu 19:00-23:00 IST, even when the
   direction matches the last trade, and a trade forced outside the hours has no 23:00 close
   (it runs until the opposite signal, Stop, or the time exit). Everything else still applies:

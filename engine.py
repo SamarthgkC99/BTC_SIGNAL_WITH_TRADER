@@ -157,7 +157,32 @@ def side_from_origin(origin):
     return ORIGIN_SIDE.get(str(origin).strip().title(), 0) if origin is not None else 0
 
 
-RULES_BUILD = "origin-side v8 2026-11-21"     # shown on the page so you can confirm which build is live
+def signal_age(ev, latest_open, iv):
+    """How many candles have closed since the signal's candle closed."""
+    return int((pd.Timestamp(latest_open) - pd.Timestamp(ev["event_time"])) / iv)
+
+
+def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
+    """Everything the Force button checks before it may place a trade.
+
+    Your click is the consent for exactly two rules: the trading hours (the caller ignores them) and
+    the repeat-direction rule. The lane, the origin direction, the signal's freshness and your
+    settings filters still apply, so a click can never enter on a stale signal or on the wrong side.
+    Returns the blocking reason, or None when the trade may be placed.
+    """
+    if s["window_lane"] != "RUNNING":
+        return f"trading is {s['window_lane'].lower()}"
+    if side == 0:
+        return "the level has no origin direction (not Bullish or Bearish)"
+    age = signal_age(ev, latest_open, iv)
+    if age > s["max_signal_age_bars"]:
+        return (f"the newest signal with a defined pattern is {age} candle(s) old, and only signals "
+                f"{s['max_signal_age_bars']} candle(s) old or newer are traded")
+    return block_reason(state, s, ev["origin_direction"], bool(ev["level_invalidated"]),
+                        pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window", skip_repeat=True)
+
+
+RULES_BUILD = "origin-side v9 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):

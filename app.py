@@ -348,7 +348,10 @@ with tab_study:
                     f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
                     f"level created {pd.Timestamp(_pk['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}. "
                     f"The row marked '⬅ trader uses this' is the one; rows with no defined pattern are skipped, "
-                    f"and a column sort you clicked can show an older row at the top.")
+                    f"and a column sort you clicked can show an older row at the top. "
+                    f"It is {engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td)} candle(s) old, and only "
+                    f"{S['max_signal_age_bars']} or newer are traded, so it is "
+                    f"{'tradeable now' if engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td) <= S['max_signal_age_bars'] else 'too old to trade — a fresher pattern must appear first'}.")
             show_df(view)
             st.download_button("Download event-study CSV (IST)", data=view.to_csv(index=False).encode("utf-8"),
                                file_name="btc_momentum_level_events_ist.csv", mime="text/csv")
@@ -449,18 +452,15 @@ with tab_pnl:
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
                 lane_for = "window"
-                # Your click is the consent for the ONE rule a manual test may break: the trading hours.
-                # Everything else (origin direction, repeat direction, your filters) still applies.
-                if side == 0:
-                    why = "the level has no origin direction (not Bullish or Bearish)"
-                elif S["window_lane"] != "RUNNING":
-                    why = f"trading is {S['window_lane'].lower()}"
-                else:
-                    why = engine.block_reason(fresh, S, last["origin_direction"], bool(last["level_invalidated"]),
-                                              level_iso, quote_currency, side, lane_for, skip_repeat=True)
+                # Your click is the consent for the trading hours and the repeat rule only. The lane,
+                # the origin direction, the signal's freshness and your filters still apply.
+                why = engine.manual_entry_reason(fresh, S, last, side, closed["open_time"].iloc[-1],
+                                                 iv_td, quote_currency)
                 if why:
                     hint = next((h for k, h in {
                         "trading is": "Press ▶ Start to allow new trades, then Force again.",
+                        "the newest signal": "Nothing fresh to follow: the newest levels have no strong close "
+                                             "yet, so the last defined signal is too old. Wait for the next pattern.",
                         "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
                                                  "origin rule cannot pick a side. Wait for the next signal.",
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
@@ -537,7 +537,10 @@ with tab_pnl:
             rows.append(("Latest directional signal", "❌", "none in the loaded sample, so there is nothing to follow"))
         else:
             ls = dd.iloc[-1]
-            ago_c = int((closed["open_time"].iloc[-1] - ls["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
+            ago_c = engine.signal_age(ls, closed["open_time"].iloc[-1], pd.Timedelta(minutes=iv_min))
+            rows.append(("Signal freshness", "✅" if ago_c <= S["max_signal_age_bars"] else "❌ BLOCKS",
+                         f"newest defined signal is {ago_c} candle(s) old; only {S['max_signal_age_bars']} "
+                         f"candle(s) old or newer are traded · newer levels without a strong close are not signals"))
             rows.append(("Latest directional signal", "ℹ️",
                          f"{SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'} · "
                          f"{ls['pattern'].replace(' (candidate)', '')} · "
@@ -545,6 +548,14 @@ with tab_pnl:
                          f"origin {ls['origin_direction']} · level {ls['level_price']:,.2f} "
                          f"(created {pd.Timestamp(ls['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}) · "
                          f"level invalidated: {bool(ls['level_invalidated'])}"))
+            _nl = events.sort_values("level_time").iloc[-1]
+            rows.append(("Newest level (study list top)", "ℹ️",
+                         f"{_nl['level_price']:,.2f} · origin {_nl['origin_direction']} → "
+                         f"{SIDE_LABEL.get(engine.side_from_origin(_nl['origin_direction'])) or 'none'} · created "
+                         f"{pd.Timestamp(_nl['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')} · "
+                         f"{_nl['pattern']}" +
+                         (" — a level touch is not a signal until a strong close fires"
+                          if not _nl["pattern"].startswith("Strong close") else "")))
             checks = [
                 ("Origin filter", S["allowed_origins"] == "Both" or ls["origin_direction"] == S["allowed_origins"],
                  f"set to '{S['allowed_origins']}'"),
