@@ -3,12 +3,11 @@
 Rules
   * Only the historical study's trading window is traded: Tue/Wed/Thu 19:00-23:00 IST,
     judged by the signal candle's close time. Signals outside it are logged and skipped.
-  * BUY on bullish signals and SELL (short) on bearish ones, and only when the signal's
-    direction matches the level's origin direction (bullish impulse -> BUY, bearish ->
-    SELL). The rule is absolute: no setting and not even the Force button lifts it, so a
-    BUY can never follow a bearish-origin level. With the Improved rules every "strong
-    close" breakout is counter-origin, which means breakouts are always skipped and only
-    rejections at the level can trade.
+  * The side comes from the level's origin direction, exactly as the Historical event study
+    shows it: a Bullish-origin level -> BUY, a Bearish-origin level -> SELL. The pattern of
+    the event (strong close above/below, rejection) is only the trigger, never the direction,
+    so a bearish-origin level can never produce a BUY. Nothing lifts this: no setting and not
+    the Force button.
   * One position at a time. A repeat of the last traded direction is skipped, whether a
     position is open or was closed; the opposite direction flips the position at the new
     signal's price, win or lose (exit reason REVERSED), and opens the other side.
@@ -146,7 +145,7 @@ def is_single(s):
 
 ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
-RULES_BUILD = "origin-strict 2026-11-21"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "origin-side v3 2026-11-21"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -235,7 +234,9 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
 
 
 def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_override=None, trigger="auto"):
-    side = int(ev["signal_side"])
+    # The level's origin direction is the trade direction (Bullish -> BUY, Bearish -> SELL).
+    # The pattern only decides WHEN to trade; it never overrides the side.
+    side = ORIGIN_SIDE.get(ev["origin_direction"], int(ev["signal_side"]))
     close_ts = ev["event_time"] + iv
     in_win = in_trade_window(close_ts)
     level_iso = pd.Timestamp(ev["level_time"]).isoformat()

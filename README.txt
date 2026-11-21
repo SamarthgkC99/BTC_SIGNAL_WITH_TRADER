@@ -17,11 +17,11 @@ Trading rules (all editable in Settings)
     other time are logged as skipped and never traded. Every still-open position is closed at
     23:00 IST, profit or loss (exit reason WINDOW_END).
   * Origin direction. BUY only when the level's originating impulse was bullish, SELL only when
-    it was bearish. A signal pointing against its level's origin is skipped ("against the
-    level's origin direction"). This rule is absolute: there is no switch for it and the Force
-    button does not lift it, so a BUY is never taken on a bearish-origin level. Under Improved
-    rules every "strong close" breakout is counter-origin, so breakouts are always skipped and
-    only rejections at the level can trade.
+    it was bearish. The trade side comes from the level's origin_direction, exactly as the
+    Historical event study table shows it: Bullish-origin level -> BUY, Bearish-origin level
+    -> SELL. The event pattern only decides WHEN that trade happens; it never sets the side,
+    so a bearish-origin level can never produce a BUY. This is absolute: there is no switch
+    for it and the Force button does not lift it.
   * One position, skip repeats. The trader holds a single position. A signal in the same
     direction as the last trade it took is skipped, whether that trade is still open or was
     closed by the opposite signal or the 23:00 IST close. The set of skip reasons is shown in
