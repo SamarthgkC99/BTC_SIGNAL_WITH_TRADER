@@ -267,17 +267,40 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema-exit v10 2026-11-22"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "flip v11 2026-11-22"         # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
     return [t for t in state["trades"] if t["status"] == "OPEN" and lane_of(t) == lane]
 
 
-def close_opposite(state, lane, side, price, exit_time_iso, closed=None, upto_open_time=None):
-    """Flip: close this lane's open trades that point the other way. Returns how many were closed."""
+def open_trades(state):
+    """Every open trade. There is only one lane now, so one position at a time is global: a trade
+    saved by an older build in the removed TEST lane counts exactly like a window trade."""
+    return [t for t in state.get("trades", []) if t["status"] == "OPEN"]
+
+
+def adopt_legacy_lane(state):
+    """Move trades saved by an older build (mode TEST, the removed second lane) into the one lane.
+
+    Without this they are invisible to the flip rule and to the one-position guard, and the legacy
+    'test lane is stopped' rule would close them at the next cycle instead of the EMA20 managing
+    them. Returns how many were adopted.
+    """
     n = 0
-    for t in open_in_lane(state, lane):
+    for t in state.get("trades", []):
+        if t.get("mode") != "WINDOW":
+            t["mode"] = "WINDOW"
+            n += 1
+    return n
+
+
+def close_opposite(state, lane, side, price, exit_time_iso, closed=None, upto_open_time=None):
+    """Flip: close the open trades that point the other way. lane=None means any lane (there is one)."""
+    n = 0
+    for t in state["trades"]:
+        if t["status"] != "OPEN" or (lane is not None and lane_of(t) != lane):
+            continue
         if t["side_num"] == side:
             continue
         seen, bars = None, None
@@ -328,7 +351,7 @@ def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None
         return "against the level's origin direction"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"
-    if side is not None and any(int(t["side_num"]) == side for t in open_in_lane(state, lane)):
+    if side is not None and any(int(t["side_num"]) == side for t in open_trades(state)):
         return f"a {SIDE_LABEL[side]} is already open (one position at a time)"
     if not usd_ok(s, quote):
         return "USD fallback data not allowed"
@@ -390,7 +413,7 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
     else:
         entry = float(entry_override) if entry_override is not None else float(ev["event_price"])
         ref_open = latest_open if entry_override is not None else ev["event_time"]
-        flipped = close_opposite(state, "window", side, entry, entry_iso, closed, ref_open)
+        flipped = close_opposite(state, None, side, entry, entry_iso, closed, ref_open)
         state["trades"].append(build_trade(
             state["next_id"], s, side, ev["pattern"], ev["origin_direction"], ev["level_invalidated"],
             level_iso, ev["level_price"], ev["event_time"].isoformat(), entry_iso,
@@ -412,7 +435,7 @@ def _catch_up(state, s, closed, events, iv, source, quote, now=None):
     if s["window_lane"] != "RUNNING" or events is None or events.empty:
         return
     directional = events[events["signal_side"] != 0]
-    if directional.empty or open_in_lane(state, "window"):
+    if directional.empty or open_trades(state):
         return
     ev = directional.iloc[-1]
     latest_open = closed["open_time"].iloc[-1]
@@ -434,6 +457,9 @@ def process(state, s, closed, events, source, quote, now=None):
     latest_open = closed["open_time"].iloc[-1]
     state.update(last_run_utc=now.isoformat(), last_source=source, last_quote=quote,
                  last_price=float(closed["close"].iloc[-1]), last_error=None)
+    adopted = adopt_legacy_lane(state)
+    if adopted:                                           # old TEST-lane trades run under the same rules now
+        print(f"[trader] adopted {adopted} trade(s) from the removed test lane", flush=True)
     _process_exits(state, closed, iv)
     fixed = close_counter_origin(state, float(closed["close"].iloc[-1]), (latest_open + iv).isoformat(), closed)
     if fixed:                                             # never leave a counter-origin position running

@@ -120,6 +120,29 @@ chk("open BUY is flipped to SELL by the newer bearish signal",
     len(open_now) == 1 and open_now[0]["side"] == "SELL",
     f"trades={[(t['id'], t['side'], t['status']) for t in st_f['trades']]}")
 
+# a position left over from the older build's removed TEST lane must flip like any other
+st_legacy = engine.new_state(S)
+engine._consider(st_legacy, S, mk("Bullish", "Strong close below level (candidate)", -1, minutes_ago=10),
+                 BASE, IV, "test", quote)
+st_legacy["trades"][0]["mode"] = "TEST"              # exactly what the previous build saved
+chk("a TEST-lane carry-over does not block the opposite side",
+    engine.manual_entry_reason(st_legacy, S, bear, -1, BASE, IV, quote) is None,
+    engine.manual_entry_reason(st_legacy, S, bear, -1, BASE, IV, quote) or "allowed")
+engine._consider(st_legacy, S, bear, BASE, IV, "test", quote)
+open_now = [t for t in st_legacy["trades"] if t["status"] == "OPEN"]
+chk("the opposite signal flips an older TEST-lane position instead of leaving two open",
+    len(open_now) == 1 and open_now[0]["side"] == "SELL" and st_legacy["trades"][0]["exit_reason"] == "REVERSED",
+    f"trades={[(t['id'], t['side'], t['status'], t.get('exit_reason')) for t in st_legacy['trades']]}")
+
+st_stop = engine.new_state(S)
+engine._consider(st_stop, S, mk("Bullish", "Strong close below level (candidate)", -1, minutes_ago=10),
+                 BASE, IV, "test", quote)
+st_stop["trades"][0]["mode"] = "TEST"
+engine.process(st_stop, S, closed, events, source, quote)
+chk("an older TEST-lane trade is adopted by worker cycle, not killed by the removed test lane",
+    st_stop["trades"][0]["mode"] == "WINDOW" and st_stop["trades"][0]["status"] == "OPEN",
+    f"{st_stop['trades'][0]['mode']} / {st_stop['trades'][0]['status']}")
+
 # ---------------------------------------------------------------- two automatic trades per IST day
 st_cap = engine.new_state(S)
 engine._consider(st_cap, S, mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=10),

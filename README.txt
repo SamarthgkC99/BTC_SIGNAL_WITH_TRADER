@@ -34,7 +34,11 @@ Trading rules (all editable in Settings)
     IST date, flips included. The Force button is the test lane: it is never counted and has no
     daily limit.
   * Flip on the opposite signal. An opposite signal closes the open position at that signal's
-    price, win or lose (exit reason REVERSED), and immediately opens the other side.
+    price, win or lose (exit reason REVERSED), and immediately opens the other side. The Force
+    button flips the same way, so you never have to close the old trade by hand first. A trade
+    carried over from an older build (it may still say mode TEST, the removed second lane) is
+    adopted into the one lane, so it is flipped and managed by the EMA20 like every other
+    position instead of being ignored.
   * Bad-direction cleanup. If an open position's stored level origin points against its own
     side (only possible from an older build or a force entry made before the rule was
     absolute), the worker closes it at the latest price with exit reason ORIGIN_FIX.

@@ -457,9 +457,9 @@ with tab_pnl:
             level_iso = last["level_time"].isoformat()
             try:
                 fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
-                lane_for = "window"
-                # Your click is the consent for the trading hours and the repeat rule only. The lane,
-                # the origin direction, the signal's freshness and your filters still apply.
+                engine.adopt_legacy_lane(fresh)                             # old TEST-lane trades flip like any other
+                # Your click is the consent for the trading hours only. The origin direction, your
+                # settings filters and the one-position-at-a-time rule still apply.
                 why = engine.manual_entry_reason(fresh, S, last, side, closed["open_time"].iloc[-1],
                                                  iv_td, quote_currency)
                 if why:
@@ -489,7 +489,7 @@ with tab_pnl:
                         data_source, "WINDOW", "manual", ema_entry=ema_ref)
                     if not in_win_now:                 # forced outside hours: there is no 11pm close to wait for
                         item["window_end"] = None
-                    flipped = (engine.close_opposite(fresh, lane_for, side, float(live_price), now_t.isoformat())
+                    flipped = (engine.close_opposite(fresh, None, side, float(live_price), now_t.isoformat())
                                if engine.is_single(S) else 0)
                     fresh["next_id"] += 1
                     fresh["signal_state"] = {"last_traded_event": last["event_time"].isoformat(),
