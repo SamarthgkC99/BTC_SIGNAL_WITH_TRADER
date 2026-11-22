@@ -16,6 +16,7 @@ import pandas as pd
 
 IST = timezone(timedelta(hours=5, minutes=30), "IST")
 INTERVAL_MIN = {"5m": 5, "15m": 15, "1h": 60}
+EMA_LENGTH = 20            # the trader's profit-protection EMA, on the trader's own interval
 
 PATTERN_SIDE = {
     "Bullish rejection (candidate)": 1,
@@ -64,8 +65,16 @@ def closed_only(df: pd.DataFrame, interval: str, now=None):
     return out.reset_index(drop=True), bool(forming)
 
 
+def add_ema(df: pd.DataFrame, length: int = EMA_LENGTH) -> pd.DataFrame:
+    """The EMA20 line the trader uses to protect a position. It is an exit line only: where it
+    sits never blocks an entry, it only decides which candle close ends the trade."""
+    out = df.copy()
+    out["ema20"] = out["close"].ewm(span=length, adjust=False, min_periods=length).mean()
+    return out
+
+
 def add_indicators(df: pd.DataFrame, p: Params) -> pd.DataFrame:
-    df = df.copy()
+    df = add_ema(df)
     prev_close = df["close"].shift(1)
     tr = pd.concat([
         df["high"] - df["low"],

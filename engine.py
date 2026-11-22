@@ -8,18 +8,30 @@ Rules
     the event (strong close above/below, rejection) is only the trigger, never the direction,
     so a bearish-origin level can never produce a BUY. Nothing lifts this: no setting and not
     the Force button.
-  * One position at a time. A repeat of the last traded direction is skipped, whether a
-    position is open or was closed; the opposite direction flips the position at the new
+  * No signal-freshness rule and no repeat-direction rule. However old the newest signal is,
+    if its own candle closed inside a trading window the trader takes it (once per signal event,
+    so a restart cannot trade the same one twice). The same direction can be traded again on a
+    new signal; while that position is still open the single position is simply kept.
+  * Two automatic window trades per IST day. Entries the worker places are capped at two per IST
+    date (flips included). The Force button is the unlimited test lane: it is not counted and
+    never capped.
+  * One position at a time. A new signal in the other direction flips the position at that
     signal's price, win or lose (exit reason REVERSED), and opens the other side.
   * Entry at the signal candle's close (or at the live price for a startup catch-up and
     the Force button). Fixed notional per trade (lot_usd). There is no stop-loss or
-    take-profit: a trade runs until the opposite signal, the 23:00 IST close, a manual
-    Stop, or the optional max_hold_bars time exit.
+    take-profit: a trade runs until the EMA20 exit, the opposite signal, the 23:00 IST close,
+    a manual Stop, or the optional max_hold_bars time exit.
+  * EMA20 profit protection. At entry the trader records which side of the EMA20 (20-candle EMA
+    on the trader's own interval) the price is on. The trade exits (reason EMA20) on the first
+    candle that CLOSES on the other side of the EMA20 than the entry side: a SELL entered above
+    the EMA closes when a candle closes below it; a SELL entered below the EMA (EMA above the
+    price) closes when a candle closes above it; a BUY is mirrored. Where the EMA sits at entry
+    never blocks the trade - it only decides which crossing is the exit.
   * Every window trade is closed at 23:00 IST, profit or loss, if still open.
   * The Force button is a manual test entry: your click is the consent for the trading hours
     only, so it may trade outside the window (and such a trade has no 23:00 close). Every other
-    rule still applies: lane RUNNING, origin direction, level-invalidated, repeat direction and
-    data currency.
+    rule still applies: lane RUNNING, origin direction, level-invalidated, data currency and the
+    one-position-at-a-time rule. It is not counted in the two-per-day window cap.
   * The window lane is RUNNING / PAUSED / STOPPED. PAUSED = no new entries, open trades
     keep running. STOPPED = no new entries and open trades are closed at the latest price.
 Candles are processed in order, so a late or restarted worker never double-trades.
@@ -38,7 +50,7 @@ DEFAULT_SETTINGS = dict(
     window_lane="RUNNING", test_lane="STOPPED", sleep_outside_window=False,   # test_lane: legacy TEST trades only
     max_hold_bars=0,
     allow_usd_fallback=False, allowed_origins="Both",
-    skip_invalidated_events=False, max_signal_age_bars=2,
+    skip_invalidated_events=False,
     provider="Auto (fallback chain)", provider_fallback=True,
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
     close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=6, confirm_closes=3,
@@ -52,6 +64,7 @@ def merge_settings(saved):
     saved.pop("tp_pct", None)                         # SL/TP exits were removed: hold until the flip or 23:00 IST
     saved.pop("sl_pct", None)
     saved.pop("allow_counter_origin", None)            # counter-origin trades are no longer possible
+    saved.pop("max_signal_age_bars", None)             # the signal-freshness rule was removed
     saved["test_lane"] = "STOPPED"                    # outside-window trading no longer exists
     if saved and "rules_mode" not in saved:        # settings saved before the rules switch existed:
         saved.pop("cooldown_bars", None)           # use the current defaults for the cooldown/confirm settings
@@ -97,7 +110,40 @@ def close_lane_trades(state, lane, price, exit_time_iso, reason="STOPPED"):
     return n
 
 
+def _entry_ema_side(t, closed, iv):
+    """Which side of the EMA20 the entry price was on (+1 above, -1 below), and the EMA value.
+
+    Stored on the trade when it is opened. A trade opened by an older build has no anchor yet, so
+    it is taken from the EMA on its own entry candle (or the oldest loaded candle if that candle
+    has already rolled out of the 500-candle sample).
+    """
+    side = int(t.get("ema_entry_side") or 0)
+    if side:
+        return side, t.get("ema_entry")
+    c = closed if "ema20" in closed else signals.add_ema(closed)
+    entry_open = pd.Timestamp(t["entry_time"]) - iv          # the entry candle's open time
+    row = c[c["open_time"] == entry_open]
+    if row.empty:
+        row = c.head(1)
+    if row.empty or pd.isna(row["ema20"].iloc[0]):
+        return 0, None
+    ema = float(row["ema20"].iloc[0])
+    side = ema_side(float(t["entry_price"]), ema) or (1 if int(t["side_num"]) > 0 else -1)
+    t["ema_entry_side"], t["ema_entry"] = side, ema
+    return side, ema
+
+
+def _crossed_ema(row, entry_side):
+    """True when this candle's close is on the other side of the EMA20 than the entry was."""
+    ema = getattr(row, "ema20", None)
+    if ema is None or pd.isna(ema):
+        return False
+    return (float(row.close) - float(ema)) * int(entry_side) < 0
+
+
 def _process_exits(state, closed, iv):
+    if "ema20" not in closed:
+        closed = signals.add_ema(closed)
     for t in state["trades"]:
         if t["status"] != "OPEN":
             continue
@@ -109,11 +155,14 @@ def _process_exits(state, closed, iv):
         after = closed[closed["open_time"] > ev_open]
         if h > 0:
             after = after.head(h)
+        entry_side, _ema = _entry_ema_side(t, closed, iv)
         for k, row in enumerate(after.itertuples(index=False), start=1):
             if wend is not None and row.open_time + iv >= wend:
                 price, reason = float(row.close), "WINDOW_END"
             elif h > 0 and k >= h:
                 price, reason = float(row.close), "TIME"
+            elif entry_side and _crossed_ema(row, entry_side):
+                price, reason = float(row.close), "EMA20"     # touch, then a close across the EMA
             else:
                 continue
             close_trade(t, price, reason, (row.open_time + iv).isoformat(), k, after.iloc[:k])
@@ -158,31 +207,67 @@ def side_from_origin(origin):
 
 
 def signal_age(ev, latest_open, iv):
-    """How many candles have closed since the signal's candle closed."""
+    """How many candles have closed since the signal's candle closed (display only)."""
     return int((pd.Timestamp(latest_open) - pd.Timestamp(ev["event_time"])) / iv)
+
+
+MAX_WINDOW_TRADES_PER_DAY = 2        # automatic window entries per IST day; Force/test is unlimited
+
+
+def ist_date(ts):
+    """The IST calendar date of a timestamp (a UTC ISO string works too)."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(signals.IST).date()
+
+
+def auto_trades_on(state, day):
+    """Automatic (worker/startup) window entries opened on that IST date. Forced trades do not count."""
+    n = 0
+    for t in state.get("trades", []):
+        if t.get("mode") != "WINDOW" or t.get("trigger") == "manual" or not t.get("entry_time"):
+            continue
+        if ist_date(t["entry_time"]) == day:
+            n += 1
+    return n
+
+
+def ema_side(price, ema):
+    """Which side of the EMA the price is on: +1 above, -1 below, 0 exactly on it."""
+    return 1 if price > ema else (-1 if price < ema else 0)
+
+
+def ema_at(closed, ts):
+    """The EMA20 value on the candle that opened at `ts` (None when that candle is not loaded)."""
+    if closed is None or len(closed) == 0:
+        return None
+    c = closed if "ema20" in closed else signals.add_ema(closed)
+    if pd.Timestamp(ts) < pd.Timestamp(c["open_time"].iloc[0]):
+        return None
+    row = c[c["open_time"] == pd.Timestamp(ts)]
+    if row.empty or pd.isna(row["ema20"].iloc[0]):
+        return None
+    return float(row["ema20"].iloc[0])
 
 
 def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
     """Everything the Force button checks before it may place a trade.
 
-    Your click is the consent for exactly two rules: the trading hours (the caller ignores them) and
-    the repeat-direction rule. The lane, the origin direction, the signal's freshness and your
-    settings filters still apply, so a click can never enter on a stale signal or on the wrong side.
+    Your click is the consent for exactly one rule: the trading hours (the caller ignores them).
+    The lane, the origin direction, your settings filters and the one-position-at-a-time rule still
+    apply, and the two-per-day window cap does not: the Force lane is the unlimited test lane.
     Returns the blocking reason, or None when the trade may be placed.
     """
     if s["window_lane"] != "RUNNING":
         return f"trading is {s['window_lane'].lower()}"
     if side == 0:
         return "the level has no origin direction (not Bullish or Bearish)"
-    age = signal_age(ev, latest_open, iv)
-    if age > s["max_signal_age_bars"]:
-        return (f"the newest signal with a defined pattern is {age} candle(s) old, and only signals "
-                f"{s['max_signal_age_bars']} candle(s) old or newer are traded")
     return block_reason(state, s, ev["origin_direction"], bool(ev["level_invalidated"]),
-                        pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window", skip_repeat=True)
+                        pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "origin-side v9 2026-11-21"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema-exit v10 2026-11-22"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -228,13 +313,12 @@ def close_counter_origin(state, price, exit_time_iso, closed=None):
     return n
 
 
-def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window",
-                 skip_repeat=False):
+def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window"):
     """Trader rules, shared by automatic entries and by the Force-trade button.
 
-    The origin filter, the origin direction, the level-invalidated filter and the data-currency
-    rule always apply. The repeat-direction rule is part of the automatism, so a manual click
-    (skip_repeat=True) does not get stopped by it; the caller checks the timing window and lane.
+    The origin filter, the origin direction, the level-invalidated filter, the data-currency rule
+    and one-position-at-a-time always apply. There is no signal-freshness rule and no
+    repeat-direction rule: a same-direction signal with no position open is a normal trade again.
     """
     if side is not None and side == 0:
         return "the level has no origin direction (not Bullish or Bearish), so no side can be traded"
@@ -244,10 +328,8 @@ def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None
         return "against the level's origin direction"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"
-    if side is not None and not skip_repeat:
-        prev = int((state.get("signal_state") or {}).get("active_side", 0))
-        if prev == side:
-            return f"same {SIDE_LABEL[side]} signal as the last trade (waiting for the opposite signal)"
+    if side is not None and any(int(t["side_num"]) == side for t in open_in_lane(state, lane)):
+        return f"a {SIDE_LABEL[side]} is already open (one position at a time)"
     if not usd_ok(s, quote):
         return "USD fallback data not allowed"
     return None
@@ -260,7 +342,7 @@ def _window_end_iso(entry_time_iso):
 
 
 def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso, level_price,
-                event_open_time_iso, entry_time_iso, entry, source, mode, trigger="auto"):
+                event_open_time_iso, entry_time_iso, entry, source, mode, trigger="auto", ema_entry=None):
     return {
         "id": trade_id, "uid": uuid.uuid4().hex[:10], "status": "OPEN", "mode": mode, "trigger": trigger,
         "side": SIDE_LABEL[side], "side_num": side, "pattern": pattern,
@@ -269,6 +351,10 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
         "event_open_time": event_open_time_iso, "entry_time": entry_time_iso,
         "entry_price": float(entry), "lot_usd": float(s["lot_usd"]), "qty": s["lot_usd"] / entry,
         "horizon": int(s["max_hold_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
+        # The EMA20 exit is anchored to the side of the EMA the entry price was on, so where the
+        # EMA sits can never block an entry - it only decides which crossing closes the trade.
+        "ema_entry": None if ema_entry is None else float(ema_entry),
+        "ema_entry_side": 0 if ema_entry is None else ema_side(float(entry), float(ema_entry)),
         "window_end": _window_end_iso(entry_time_iso) if mode == "WINDOW" else None,
     }
 
@@ -286,40 +372,43 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
         "level_invalidated": bool(ev["level_invalidated"]), "in_trade_window": bool(in_win),
         "source": source, "trigger": trigger, "action": "",
     }
-    age = (latest_open - ev["event_time"]) / iv
+    entry_iso = (latest_open + iv).isoformat() if entry_override is not None else close_ts.isoformat()
+    used_today = auto_trades_on(state, ist_date(entry_iso))
     if side == 0:
         reason = "the level has no origin direction (not Bullish or Bearish)"
     elif not in_win:
         reason = "outside the Tue-Thu 19:00-23:00 IST trading window"
     elif s["window_lane"] != "RUNNING":
         reason = f"trading is {s['window_lane'].lower()}"
-    elif age > s["max_signal_age_bars"]:
-        reason = "stale signal (worker was behind)"
+    elif used_today >= MAX_WINDOW_TRADES_PER_DAY:
+        reason = (f"the day's {MAX_WINDOW_TRADES_PER_DAY} automatic window trades are already used "
+                  f"(a Force/test trade still works)")
     else:
         reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote, side)
     if reason:
         sig["action"] = "SKIPPED: " + reason
     else:
         entry = float(entry_override) if entry_override is not None else float(ev["event_price"])
-        entry_iso = (latest_open + iv).isoformat() if entry_override is not None else close_ts.isoformat()
-        flipped = close_opposite(state, "window", side, entry, entry_iso, closed,
-                                 latest_open if entry_override is not None else ev["event_time"])
+        ref_open = latest_open if entry_override is not None else ev["event_time"]
+        flipped = close_opposite(state, "window", side, entry, entry_iso, closed, ref_open)
         state["trades"].append(build_trade(
             state["next_id"], s, side, ev["pattern"], ev["origin_direction"], ev["level_invalidated"],
             level_iso, ev["level_price"], ev["event_time"].isoformat(), entry_iso,
-            entry, source, "WINDOW", trigger))
+            entry, source, "WINDOW", trigger, ema_entry=ema_at(closed, ref_open)))
         state["next_id"] += 1
         state["signal_state"] = {
-            "active_side": side, "last_traded_event": ev["event_time"].isoformat(),
+            "last_traded_event": ev["event_time"].isoformat(),
             "last_entry_time": entry_iso, "last_level_time": level_iso,
         }
         sig["action"] = "TRADED" + (f" (flipped {flipped} opposite position)" if flipped else "")
     state["signals"].append(sig)
 
 
-def _catch_up(state, s, closed, events, iv, source, quote):
-    """Start now = trade now: on startup, or after pressing Start, act on the newest signal
-    if it is inside the window, at most `max_signal_age_bars` old, and not already traded."""
+def _catch_up(state, s, closed, events, iv, source, quote, now=None):
+    """Start now = trade now: on startup, or after pressing Start, take the newest signal whose
+    own candle closed inside the trading window - however old it is - unless it was already
+    traded. The two-per-day window cap still applies, and a trade opened while the window is
+    shut has no 23:00 close waiting for it."""
     if s["window_lane"] != "RUNNING" or events is None or events.empty:
         return
     directional = events[events["signal_side"] != 0]
@@ -327,13 +416,15 @@ def _catch_up(state, s, closed, events, iv, source, quote):
         return
     ev = directional.iloc[-1]
     latest_open = closed["open_time"].iloc[-1]
-    age = (latest_open - ev["event_time"]) / iv
-    if not in_trade_window(ev["event_time"] + iv) or age > s["max_signal_age_bars"]:
+    if not in_trade_window(ev["event_time"] + iv):
         return
     if (state.get("signal_state") or {}).get("last_traded_event") == ev["event_time"].isoformat():
         return
+    before = len(state["trades"])
     _consider(state, s, ev, latest_open, iv, source, quote, closed,
               entry_override=float(closed["close"].iloc[-1]), trigger="startup")
+    if len(state["trades"]) > before and now is not None and not in_trade_window(now):
+        state["trades"][-1]["window_end"] = None      # started late: nothing to close at 23:00
 
 
 def process(state, s, closed, events, source, quote, now=None):
@@ -354,7 +445,7 @@ def process(state, s, closed, events, source, quote, now=None):
     state["last_lane_state"] = s["window_lane"]
     if state["last_candle_time"] is None:                 # first run: baseline history, then catch up
         state["last_candle_time"] = latest_open.isoformat()
-        _catch_up(state, s, closed, events, iv, source, quote)
+        _catch_up(state, s, closed, events, iv, source, quote, now)
         state["signals"] = state["signals"][-100:]
         return state
     last_seen = pd.Timestamp(state["last_candle_time"])
@@ -363,7 +454,7 @@ def process(state, s, closed, events, source, quote, now=None):
         for _, ev in new.sort_values("event_time").iterrows():
             _consider(state, s, ev, latest_open, iv, source, quote, closed)
     if prev_lane != "RUNNING" and s["window_lane"] == "RUNNING":    # Start pressed mid-window
-        _catch_up(state, s, closed, events, iv, source, quote)
+        _catch_up(state, s, closed, events, iv, source, quote, now)
     state["last_candle_time"] = max(last_seen, latest_open).isoformat()
     state["signals"] = state["signals"][-100:]
     state["trades"] = state["trades"][-2000:]
