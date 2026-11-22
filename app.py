@@ -316,8 +316,12 @@ with tab_study:
         else:
             v = events.copy()
             v["in_trade_window"] = v["event_close_time"].apply(in_trade_window)
-            side_lbl = v["signal_side"].map(SIDE_LABEL)
-            v["trade"] = np.where(v["signal_side"] == 0, "", np.where(v["in_trade_window"], side_lbl, "signal only"))
+            v["trade_side_by_origin"] = v["origin_direction"].map(
+                lambda o: SIDE_LABEL.get(engine.side_from_origin(o)) or "none")
+            # `trade` is the side the trader would really take (the origin side), and only on a row
+            # that is a defined signal: a level touch with no pattern is never a trade.
+            v["trade"] = np.where(v["signal_side"] == 0, "",
+                                  np.where(v["in_trade_window"], v["trade_side_by_origin"], "signal only"))
             order = st.radio("Order", ["By level, then time (as in the first version)", "Newest first"],
                              horizontal=True)
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
@@ -325,11 +329,11 @@ with tab_study:
             _pick = events[events["signal_side"] != 0]
             if not _pick.empty:
                 _pt = _pick["event_time"].max()
-                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this", "")
+                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this",
+                                            np.where((v["event_time"] > _pt) & (v["signal_side"] == 0),
+                                                     "⚠️ not a signal (no pattern)", ""))
             else:
                 v["trader_pick"] = ""
-            v["trade_side_by_origin"] = v["origin_direction"].map(
-                lambda o: SIDE_LABEL.get(engine.side_from_origin(o)) or "none")
             v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
             v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
             cols = ["trader_pick", "level_id", "level_time", "level_price", "origin_direction", "trade_side_by_origin",
@@ -347,8 +351,10 @@ with tab_study:
                     f"{_pk['level_price']:,.2f}, origin {_pk['origin_direction']}, "
                     f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
                     f"level created {pd.Timestamp(_pk['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}. "
-                    f"The row marked '⬅ trader uses this' is the one; rows with no defined pattern are skipped, "
-                    f"and a column sort you clicked can show an older row at the top. "
+                    f"The row marked '⬅ trader uses this' is the only one it acts on, and a column sort you "
+                    f"clicked can show an older row at the top. A **newer level above it is not a signal**: a touch "
+                    f"with no strong close or rejection is marked '⚠️ not a signal (no pattern)', its trade column "
+                    f"is empty, and it cannot open a trade - the side and the entry only exist once a pattern fires. "
                     f"It is {engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td)} candle(s) old. There is no "
                     f"freshness rule any more: if its candle closed inside a trading window it is traded, however "
                     f"old it is, up to {engine.MAX_WINDOW_TRADES_PER_DAY} automatic window trades per IST day.")
