@@ -124,17 +124,31 @@ PROVIDER_CHOICES = ["Auto (fallback chain)", "Binance", "Delta Exchange India (B
 USD_PROVIDERS = {"Delta Exchange India (BTCUSD perp)", "Coinbase (USD)", "Kraken (USD)"}
 
 
-def usd_inr_rate(default: float = 88.0) -> float:
-    """Public USD -> INR rate (no key). Returns `default` if both public endpoints fail."""
-    for url in ("https://open.er-api.com/v6/latest/USD",
-                "https://api.frankfurter.dev/v1/latest?base=USD&symbols=INR"):
+FX_ENDPOINTS = [("https://open.er-api.com/v6/latest/USD", "open.er-api.com"),
+                ("https://api.frankfurter.dev/v1/latest?base=USD&symbols=INR", "frankfurter.dev"),
+                ("https://api.fxratesapi.com/latest?base=USD&currencies=INR", "fxratesapi.com")]
+USD_INR_FALLBACK = 88.0
+
+
+def usd_inr_quote(default: float = USD_INR_FALLBACK):
+    """Capture the public USD -> INR rate: (rupees per USD, source, captured UTC ISO).
+
+    No API key. Uses `default` (and says so) if every endpoint fails, so the page always has a rate.
+    """
+    captured = pd.Timestamp.now(tz="UTC").isoformat()
+    for url, name in FX_ENDPOINTS:
         try:
             rate = float(_get(url, {})["rates"]["INR"])
             if rate > 0:
-                return rate
+                return rate, name, captured
         except Exception:                                  # noqa: BLE001 - try the next endpoint
             continue
-    return default
+    return float(default), "built-in fallback", captured
+
+
+def usd_inr_rate(default: float = USD_INR_FALLBACK) -> float:
+    """Just the rate from usd_inr_quote(). Returns `default` if every public endpoint fails."""
+    return usd_inr_quote(default)[0]
 
 
 def contract_size(source: str) -> float:

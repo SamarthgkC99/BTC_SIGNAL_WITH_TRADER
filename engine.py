@@ -267,7 +267,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "inr v14 2026-11-25"         # shown on the page so you can confirm which build is live
+RULES_BUILD = "fx auto v15 2026-11-25"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):

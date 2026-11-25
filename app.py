@@ -129,13 +129,50 @@ def show_df(df, compact_cols=None, compact=False):
 S = engine.merge_settings(read_key("settings")[0])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def live_usd_inr():
-    return providers.usd_inr_rate()
+FX_KEY = "usd_inr"                                       # the auto-captured USD -> INR rate
 
 
-RATE_SET = float(S.get("usd_inr", 0.0) or 0.0)          # 0 = use the live rate
-INR = RATE_SET if RATE_SET > 0 else live_usd_inr()       # rupees per USD for every money figure
+def saved_fx():
+    try:
+        return STORE.read(FX_KEY) or {}
+    except Exception:                                      # noqa: BLE001
+        return {}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def auto_usd_inr():
+    """Auto-captured USD -> INR rate: (rupees per $1, captured UTC ISO, source).
+
+    The background capturer refreshes the stored rate hourly; this also refreshes it when the
+    stored one is stale (for example after the host slept), so the rupee figures never use an old rate.
+    """
+    saved = saved_fx()
+    try:
+        age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(saved["captured_utc"])).total_seconds()
+    except Exception:                                      # noqa: BLE001
+        age = None
+    if float(saved.get("rate") or 0) > 0 and age is not None and 0 <= age < 3600:
+        return float(saved["rate"]), saved["captured_utc"], saved.get("source") or "saved"
+    rate, source, when = providers.usd_inr_quote()
+    try:
+        STORE.write(FX_KEY, {"rate": rate, "captured_utc": when, "source": source})
+    except Exception:                                      # noqa: BLE001
+        pass
+    return rate, when, source
+
+
+def fx_ist(when):
+    try:
+        return pd.Timestamp(when).tz_convert(IST).strftime("%d %b %Y %H:%M IST")
+    except Exception:                                      # noqa: BLE001
+        return str(when or "-")
+
+
+FX_RATE, FX_WHEN, FX_SOURCE = auto_usd_inr()
+RATE_SET = float(S.get("usd_inr", 0.0) or 0.0)          # 0 = use the auto-captured rate
+INR = RATE_SET if RATE_SET > 0 else FX_RATE             # rupees per USD for every money figure
+RATE_LABEL = (f"your saved rate of ₹{RATE_SET:,.2f}/$" if RATE_SET > 0 else
+              f"the auto-captured rate of ₹{FX_RATE:,.2f}/$, captured {fx_ist(FX_WHEN)} from {FX_SOURCE}")
 
 
 def _inr_digits(value, dec=2):
@@ -649,7 +686,7 @@ with tab_pnl:
     b1.metric("Open / closed trades", f"{sm['open']} / {sm['closed']}")
     b2.metric("Win rate", "-" if sm["win_rate"] is None else f"{sm['win_rate']:.0f}%")
     b3.metric("Realized P&L (INR)", inr_signed(sm["realized"]))
-    st.caption(f"Money is shown in INR at ₹{INR:,.2f} per $1 ({'your saved rate' if RATE_SET > 0 else 'live rate'}). "
+    st.caption(f"Money is shown in INR at ₹{INR:,.2f} per $1 ({RATE_LABEL}). "
                f"USD: equity ${sm['equity']:,.2f} · balance ${sm['balance']:,.2f} · "
                f"unrealized ${sm['unrealized']:+,.2f} · realized ${sm['realized']:+,.2f}. Prices stay in USD.")
     curve = sm["curve"]
@@ -764,7 +801,7 @@ with tab_set:
                                               round(float(S["initial_balance"]) * INR, 0), 1000.0)
         initial_balance = float(initial_balance_inr) / INR
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
-        usd_inr_set = c2.number_input("USD → INR rate (0 = fetch the live rate)", 0.0, 1000.0,
+        usd_inr_set = c2.number_input("USD → INR rate (0 = use the auto-captured rate)", 0.0, 1000.0,
                                       float(S.get("usd_inr", 0.0)), 0.01)
         st.caption(f"The balance is stored as **${initial_balance:,.2f}** at ₹{INR:,.2f}/$ and shown in rupees "
                    f"everywhere. A saved rate above is used instead of the live one, so the rupee figures stay put.")
@@ -799,6 +836,19 @@ with tab_set:
             st.success("Settings saved.")
         except Exception as exc:                                # noqa: BLE001
             st.error(f"Could not save settings: {type(exc).__name__}")
+    fc1, fc2 = st.columns([4, 1])
+    fc1.caption(f"Auto USD → INR capturer: **₹{FX_RATE:,.2f} per $1**, captured {fx_ist(FX_WHEN)} "
+                f"from {FX_SOURCE}. It refreshes itself every hour and is stored with the account. "
+                + ("Your saved rate above overrides it." if RATE_SET > 0
+                   else "This is the rate used in every rupee figure."))
+    if fc2.button("Refresh rate now"):
+        rate, source, when = providers.usd_inr_quote()
+        try:
+            STORE.write(FX_KEY, {"rate": rate, "captured_utc": when, "source": source})
+        except Exception as exc:                            # noqa: BLE001
+            st.warning(f"Could not store the rate: {type(exc).__name__}")
+        auto_usd_inr.clear()
+        st.rerun()
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
                f"provider {S['provider']} · one position, flips on the opposite signal · "
                f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · "
@@ -806,14 +856,27 @@ with tab_set:
                f"₹{INR:,.2f}/$")
 
     with st.expander("Reset demo account"):
-        st.caption(f"Restarts at the saved initial balance of **{inr(S['initial_balance'])}** "
-                   f"(${S['initial_balance']:,.2f} at ₹{INR:,.2f}/$).")
-        sure = st.checkbox("I understand this deletes all trades and restarts from the initial balance")
+        st.caption(f"Restarts at any starting balance you type below — this only applies to this reset "
+                   f"unless you tick the box to save it. The normal saved balance is "
+                   f"**{inr(S['initial_balance'])}** (${S['initial_balance']:,.2f} at ₹{INR:,.2f}/$).")
+        rc1, rc2 = st.columns(2)
+        reset_inr = rc1.number_input("Starting balance for this reset (₹)", 1.0, 1_000_000_000.0,
+                                     round(float(S["initial_balance"]) * INR, 0), 1000.0,
+                                     key="reset_balance_inr")
+        reset_balance = float(reset_inr) / INR
+        rc2.caption(f"Stored as **${reset_balance:,.2f}** at ₹{INR:,.2f}/$ "
+                    f"({RATE_LABEL}).")
+        keep_reset = rc2.checkbox("Also save this as the normal starting balance", value=False)
+        sure = st.checkbox("I understand this deletes all trades and restarts from the balance above")
         if st.button("Reset account", disabled=not sure):
             try:
-                STORE.write("state", engine.new_state(S))
+                fresh = engine.merge_settings(STORE.read("settings"))
+                if keep_reset:
+                    fresh["initial_balance"] = reset_balance
+                    STORE.write("settings", fresh)
+                STORE.write("state", engine.new_state({**fresh, "initial_balance": reset_balance}))
                 read_key.clear()
-                st.success("Account reset.")
+                st.success(f"Account reset to {inr(reset_balance)} (${reset_balance:,.2f}).")
             except Exception as exc:                            # noqa: BLE001
                 st.error(f"Reset failed: {type(exc).__name__}")
     st.caption("App login password: set APP_PASSWORD as an environment variable on your host (it is intentionally not a page field).")

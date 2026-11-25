@@ -271,11 +271,20 @@ chk("other providers keep the USD-notional sizing",
     bt4["lots"] is None and abs(bt4["qty"] - 20.0 / 59000.0) < 1e-15,
     f"qty={bt4['qty']:.8f} lots={bt4['lots']}")
 
-# ---------------------------------------------------------------- INR display
+# ---------------------------------------------------------------- INR display + auto capturer
 _rate = providers.usd_inr_rate()
 chk("a USD->INR rate is available for the rupee display", _rate > 20, f"₹{_rate:,.2f} per $1")
-chk("the INR rate defaults to the live rate (0 = live, a saved value pins it)",
+q_rate, q_source, q_when = providers.usd_inr_quote()
+chk("the auto capturer returns (rate, source, captured-at) in one call",
+    q_rate > 20 and isinstance(q_source, str) and bool(q_source)
+    and abs((pd.Timestamp.now(tz="UTC") - pd.Timestamp(q_when)).total_seconds()) < 300,
+    f"₹{q_rate:,.2f} from {q_source} at {q_when}")
+chk("the INR rate defaults to the auto-captured rate (0 = auto, a saved value pins it)",
     float(engine.merge_settings({}).get("usd_inr", -1)) == 0.0, engine.merge_settings({}).get("usd_inr"))
+chk("a reset can start from any balance, independent of the saved settings",
+    abs(engine.new_state({**engine.merge_settings({}), "initial_balance": 123456.78})["initial_balance"]
+        - 123456.78) < 1e-9,
+    f"{engine.new_state({**engine.merge_settings({}), 'initial_balance': 123456.78})['initial_balance']:,.2f}")
 
 print(f"\nBUILD: {engine.RULES_BUILD}")
 print("ALL PASS" if all(ROWS) else f"SOME FAILED ({ROWS.count(False)}/{len(ROWS)})")

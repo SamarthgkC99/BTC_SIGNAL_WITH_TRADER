@@ -103,12 +103,22 @@ Price provider (sidebar)
 Event rules (sidebar)
   Improved (default: stricter invalidation, one event per candle, cooldown 6) or Legacy (first version, cooldown 3).
 
-INR display
+INR display + automatic USD -> INR capturer
   Equity, balance, unrealized and realized P&L, the equity curve, the open-position P&L and the
-  trades table (including its CSV) are shown in rupees, converted at a USD -> INR rate from a
-  public no-key source. Pin a rate in Settings ('USD -> INR rate', 0 = live) so the rupees stop
-  moving. The initial balance is entered in rupees and stored as USD at that rate; BTC prices,
-  entry/exit prices and fees stay in USD.
+  trades table (including its CSV) are shown in rupees.
+  The USD -> INR rate is captured automatically from a public no-key source (open.er-api.com,
+  then frankfurter.dev, then fxratesapi.com; a built-in 88 is used only if all three fail).
+  The background worker captures it once an hour and stores it with the account data, and the
+  page re-captures it if the stored rate is more than an hour old. Settings shows the rate and
+  when it was captured, with a 'Refresh rate now' button.
+  Pin a rate in Settings ('USD -> INR rate', 0 = auto-captured) so the rupees stop moving.
+  BTC prices, entry/exit prices and fees stay in USD.
+
+Reset the demo account to any balance
+  Settings -> 'Reset demo account': type any starting balance in rupees for that reset. The
+  balance applies to this reset only; tick 'Also save this as the normal starting balance' to
+  make it the saved default too. Resetting deletes all trades and restarts from that balance
+  (stored as USD at the rate shown).
 
 Environment variables (set on Render, never in code)
   APP_PASSWORD               login password for the page

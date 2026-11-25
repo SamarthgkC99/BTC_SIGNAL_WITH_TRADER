@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 
 import engine
+import providers
 from signals import INTERVAL_MIN
 from store import Store
 
@@ -47,6 +48,18 @@ def pinger():
             print(f"[pinger] {exc}", flush=True)
 
 
+def fx_capturer():
+    """Capture the public USD -> INR rate once an hour so the dashboard's rupee figures stay fresh."""
+    while True:
+        try:
+            rate, source, captured = providers.usd_inr_quote()
+            STORE.write("usd_inr", {"rate": rate, "captured_utc": captured, "source": source})
+            print(f"[fx] ₹{rate:,.2f} per $1 from {source}", flush=True)
+        except Exception as exc:                                      # noqa: BLE001
+            print(f"[fx] cannot capture the USD->INR rate: {exc}", flush=True)
+        time.sleep(3600)
+
+
 def worker():
     """Run one cycle right after each candle closes (plus once at start-up)."""
     last_done, retries = None, 0
@@ -70,7 +83,7 @@ def worker():
 
 def main():
     proc = start_streamlit()
-    for target in (worker, pinger):
+    for target in (worker, pinger, fx_capturer):
         threading.Thread(target=target, daemon=True).start()
 
     def stop(*_):
