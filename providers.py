@@ -115,9 +115,21 @@ def _kraken(interval, limit):
     return _finish(df)
 
 
+# BTC per lot where the exchange trades fixed-size contracts (0 = size in USD notional instead).
+CONTRACT_SIZE = {"Delta Exchange India (BTCUSD perp)": 0.001}
+
+
 PROVIDER_CHOICES = ["Auto (fallback chain)", "Binance", "Delta Exchange India (BTCUSD perp)", "Bybit", "OKX",
                     "KuCoin", "Coinbase (USD)", "Kraken (USD)"]
 USD_PROVIDERS = {"Delta Exchange India (BTCUSD perp)", "Coinbase (USD)", "Kraken (USD)"}
+
+
+def contract_size(source: str) -> float:
+    """BTC per lot for a candle source that trades fixed contracts, else 0 (USD-notional sizing)."""
+    for name, size in CONTRACT_SIZE.items():
+        if source == name or str(source).startswith(name):
+            return size
+    return 0.0
 
 
 def _groups(interval, limit):

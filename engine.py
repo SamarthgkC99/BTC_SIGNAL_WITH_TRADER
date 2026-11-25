@@ -267,7 +267,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "flip v11 2026-11-22"         # shown on the page so you can confirm which build is live
+RULES_BUILD = "delta-lots v12 2026-11-25"         # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -366,13 +366,25 @@ def _window_end_iso(entry_time_iso):
 
 def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso, level_price,
                 event_open_time_iso, entry_time_iso, entry, source, mode, trigger="auto", ema_entry=None):
+    entry = float(entry)
+    # A source that trades fixed contracts (Delta's BTCUSD perpetual: 1 lot = 0.001 BTC) is sized in
+    # whole lots: the nearest whole lot to the USD setting, and never less than one lot. The stored
+    # lot_usd becomes the traded notional, so the simulated fee follows the real position size.
+    contract = providers.contract_size(source)
+    lots = None
+    if contract > 0:
+        lots = max(1, int(round(float(s["lot_usd"]) / (contract * entry))))
+        qty = lots * contract
+        lot_usd = qty * entry
+    else:
+        qty, lot_usd = float(s["lot_usd"]) / entry, float(s["lot_usd"])
     return {
         "id": trade_id, "uid": uuid.uuid4().hex[:10], "status": "OPEN", "mode": mode, "trigger": trigger,
         "side": SIDE_LABEL[side], "side_num": side, "pattern": pattern,
         "origin_direction": origin, "level_invalidated": bool(invalidated),
         "level_time": level_time_iso, "level_price": float(level_price),
         "event_open_time": event_open_time_iso, "entry_time": entry_time_iso,
-        "entry_price": float(entry), "lot_usd": float(s["lot_usd"]), "qty": s["lot_usd"] / entry,
+        "entry_price": entry, "lot_usd": lot_usd, "qty": qty, "lots": lots, "contract_size": contract or None,
         "horizon": int(s["max_hold_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
         # The EMA20 exit is anchored to the side of the EMA the entry price was on, so where the
         # EMA sits can never block an entry - it only decides which crossing closes the trade.

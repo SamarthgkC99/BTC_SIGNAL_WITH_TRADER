@@ -43,7 +43,10 @@ Trading rules (all editable in Settings)
     side (only possible from an older build or a force entry made before the rule was
     absolute), the worker closes it at the latest price with exit reason ORIGIN_FIX.
   * Sizing and exits. Entry at the signal candle's close (live price for a startup catch-up and
-    the Force button). Lot $20 notional, initial balance $5,000. There is no stop-loss and no
+    the Force button). Lot $20 notional, initial balance $5,000. On Delta Exchange India data
+    (BTCUSD perpetual) the trade is sized in whole 0.001 BTC lots instead: the nearest whole lot
+    to the USD setting, never less than one lot (a $20 setting is 1 lot, about $59 at $59,000),
+    and the simulated fee uses that real notional. Other providers keep the USD-notional size. There is no stop-loss and no
     take-profit: a position is held until the EMA20 exit, the opposite signal, the 23:00 IST
     close, a manual Stop, or the optional time exit (Max holding candles, default none).
     Fees default 0 (simulated setting).

@@ -241,6 +241,30 @@ t = ema_exit(flat + [103.0, 99.0], -1, 25, 103.0)
 chk("a SELL is never blocked by the EMA and exits on its first close across",
     t["exit_reason"] == "EMA20", f"{t['exit_reason']} @ {t.get('exit_price')}")
 
+# ---------------------------------------------------------------- fixed-size lots (Delta: 1 lot = 0.001 BTC)
+DELTA_SRC = "Delta Exchange India (BTCUSD perp)"
+bt = engine.build_trade(1, S, 1, "Touch / no defined pattern", "Bullish", False,
+                        "2026-11-24T14:35:00+00:00", 59000.0, "2026-11-24T15:05:00+00:00",
+                        "2026-11-24T15:10:00+00:00", 59000.0, DELTA_SRC, "WINDOW")
+chk("Delta data sizes the trade in whole 0.001 BTC lots (a $20 setting is one lot)",
+    bt["lots"] == 1 and abs(bt["qty"] - 0.001) < 1e-15,
+    f"lots={bt['lots']} qty={bt['qty']} notional=${bt['lot_usd']:,.2f}")
+chk("the simulated fee follows the lot notional, not the $20 setting",
+    abs(bt["lot_usd"] - 0.001 * 59000) < 1e-9 and abs(bt["contract_size"] - 0.001) < 1e-15,
+    f"${bt['lot_usd']:,.2f}")
+bt2 = engine.build_trade(2, dict(S, lot_usd=500.0), -1, "x", "Bearish", False,
+                         "2026-11-24T14:35:00+00:00", 59000.0, "2026-11-24T15:05:00+00:00",
+                         "2026-11-24T15:10:00+00:00", 59000.0, DELTA_SRC, "WINDOW")
+chk("a larger USD setting becomes the nearest whole lots (8 lots for $500 at $59,000)",
+    bt2["lots"] == 8 and abs(bt2["qty"] - 0.008) < 1e-15,
+    f"lots={bt2['lots']} qty={bt2['qty']} notional=${bt2['lot_usd']:,.2f}")
+bt3 = engine.build_trade(3, S, 1, "x", "Bullish", False, "2026-11-24T14:35:00+00:00", 59000.0,
+                         "2026-11-24T15:05:00+00:00", "2026-11-24T15:10:00+00:00", 59000.0,
+                         "Binance Spot (data-api.binance.vision)", "WINDOW")
+chk("other providers keep the USD-notional sizing",
+    bt3["lots"] is None and abs(bt3["qty"] - 20.0 / 59000.0) < 1e-15,
+    f"qty={bt3['qty']:.8f} lots={bt3['lots']}")
+
 print(f"\nBUILD: {engine.RULES_BUILD}")
 print("ALL PASS" if all(ROWS) else f"SOME FAILED ({ROWS.count(False)}/{len(ROWS)})")
 sys.exit(0 if all(ROWS) else 1)

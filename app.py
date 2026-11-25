@@ -652,7 +652,7 @@ with tab_act:
         td["entry_ist"] = ist_str(td["entry_time"])
         td["exit_ist"] = ist_str(td["exit_time"]).fillna("") if td["exit_time"].notna().any() else ""
         cols = ["id", "mode", "trigger", "status", "side", "pattern", "origin_direction", "level_invalidated", "entry_ist",
-                "entry_price", "exit_ist", "exit_price", "exit_reason", "bars_held", "pnl_usd",
+                "entry_price", "lots", "qty", "exit_ist", "exit_price", "exit_reason", "bars_held", "pnl_usd",
                 "future_high_excursion_pct", "source"]
         out = td[[c for c in cols if c in td.columns]].round(4)
         show_df(out, ["id", "mode", "side", "entry_ist", "exit_reason", "pnl_usd", "future_high_excursion_pct"], compact)
@@ -715,6 +715,10 @@ with tab_set:
     with st.form("trade_settings"):
         c1, c2 = st.columns(2)
         lot_usd = c1.number_input("Lot size (USD notional per trade)", 1.0, 100000.0, float(S["lot_usd"]), 1.0)
+        if providers.contract_size(provider) > 0 or providers.contract_size(S["provider"]) > 0:
+            st.caption("Delta Exchange India data is sized in whole **0.001 BTC lots** (1 lot): the trade uses the "
+                       "nearest whole lot to this USD figure, never less than one lot, so its real notional is "
+                       "0.001 BTC x price (about $59 at $59,000) and the fee follows that notional.")
         initial_balance = c2.number_input("Initial balance (USD, applies on account reset)", 100.0, 10_000_000.0,
                                           float(S["initial_balance"]), 100.0)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
