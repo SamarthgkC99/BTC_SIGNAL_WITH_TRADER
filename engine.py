@@ -46,7 +46,7 @@ import signals
 from signals import INTERVAL_MIN, SIDE_LABEL, in_trade_window
 
 DEFAULT_SETTINGS = dict(
-    initial_balance=5000.0, lot_usd=20.0, size_lots=1, fee_pct=0.0,
+    initial_balance=5000.0, lot_usd=20.0, size_lots=1, fee_pct=0.0, usd_inr=0.0,
     window_lane="RUNNING", test_lane="STOPPED", sleep_outside_window=False,   # test_lane: legacy TEST trades only
     max_hold_bars=0,
     allow_usd_fallback=False, allowed_origins="Both",
@@ -267,7 +267,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "delta-lots v13 2026-11-25"         # shown on the page so you can confirm which build is live
+RULES_BUILD = "inr v14 2026-11-25"         # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):

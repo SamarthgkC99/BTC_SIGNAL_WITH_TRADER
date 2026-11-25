@@ -128,6 +128,39 @@ def show_df(df, compact_cols=None, compact=False):
 
 S = engine.merge_settings(read_key("settings")[0])
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def live_usd_inr():
+    return providers.usd_inr_rate()
+
+
+RATE_SET = float(S.get("usd_inr", 0.0) or 0.0)          # 0 = use the live rate
+INR = RATE_SET if RATE_SET > 0 else live_usd_inr()       # rupees per USD for every money figure
+
+
+def _inr_digits(value, dec=2):
+    """Indian grouping: 4,64,650.00 instead of 464,650.00."""
+    whole, frac = f"{abs(float(value)):.{dec}f}".split(".")
+    if len(whole) > 3:
+        head, tail, groups = whole[:-3], whole[-3:], []
+        while head:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        whole = ",".join(groups) + "," + tail
+    return whole, frac
+
+
+def inr(amount, dec=2):
+    """A USD amount shown in rupees at this page's rate."""
+    whole, frac = _inr_digits(float(amount) * INR, dec)
+    return f"₹{whole}.{frac}"
+
+
+def inr_signed(amount, dec=2):
+    v = float(amount) * INR
+    whole, frac = _inr_digits(v, dec)
+    return f"{'+' if v >= 0 else '-'}₹{whole}.{frac}"
+
 # ---------------------------------------------------------------- sidebar
 IVS = ["5m", "15m", "1h"]
 with st.sidebar:
@@ -609,20 +642,23 @@ with tab_pnl:
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
-    a1.metric("Equity (USD)", f"{sm['equity']:,.2f}", f"{sm['equity'] - sm['initial']:+,.4f}")
-    a2.metric("Balance (realized)", f"{sm['balance']:,.2f}")
-    a3.metric("Unrealized P&L", f"{sm['unrealized']:+,.4f}")
+    a1.metric("Equity (INR)", inr(sm["equity"]), inr_signed(sm["equity"] - sm["initial"]))
+    a2.metric("Balance (realized, INR)", inr(sm["balance"]))
+    a3.metric("Unrealized P&L (INR)", inr_signed(sm["unrealized"]))
     b1, b2, b3 = st.columns(3)
     b1.metric("Open / closed trades", f"{sm['open']} / {sm['closed']}")
     b2.metric("Win rate", "-" if sm["win_rate"] is None else f"{sm['win_rate']:.0f}%")
-    b3.metric("Realized P&L", f"{sm['realized']:+,.4f}")
+    b3.metric("Realized P&L (INR)", inr_signed(sm["realized"]))
+    st.caption(f"Money is shown in INR at ₹{INR:,.2f} per $1 ({'your saved rate' if RATE_SET > 0 else 'live rate'}). "
+               f"USD: equity ${sm['equity']:,.2f} · balance ${sm['balance']:,.2f} · "
+               f"unrealized ${sm['unrealized']:+,.2f} · realized ${sm['realized']:+,.2f}. Prices stay in USD.")
     curve = sm["curve"]
     cfig = go.Figure()
     if len(curve):
         xs = [ist_naive(curve["time"]).iloc[0] - pd.Timedelta(minutes=5)] + list(ist_naive(curve["time"]))
-        ys = [sm["initial"]] + list(curve["balance"])
-        cfig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", line_shape="hv", name="Balance"))
-    cfig.update_layout(height=260 if compact else 340, yaxis_title="Balance (USD)", xaxis_title="Time (IST)",
+        ys = [sm["initial"] * INR] + [b * INR for b in curve["balance"]]
+        cfig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", line_shape="hv", name="Balance (INR)"))
+    cfig.update_layout(height=260 if compact else 340, yaxis_title="Balance (INR)", xaxis_title="Time (IST)",
                        margin=dict(l=10, r=10, t=20, b=10))
     st.plotly_chart(cfig, width="stretch")
     td = engine.trades_df(state, mode)
@@ -633,12 +669,13 @@ with tab_pnl:
     else:
         if price_for_pnl:
             opened["unrealized_usd"] = opened["qty"] * (price_for_pnl - opened["entry_price"]) * opened["side_num"]
+            opened["unrealized_inr"] = opened["unrealized_usd"] * INR
         opened["entry_ist"] = ist_str(opened["entry_time"])
         opened["closes_at_ist"] = [ist_str(pd.Series([pd.Timestamp(w)]))[0] if isinstance(w, str) and w else "flip or Stop"
                                    for w in opened.get("window_end", [None] * len(opened))]
         show_df(opened[["id", "mode", "trigger", "side", "pattern", "origin_direction", "level_price",
-                        "entry_ist", "entry_price", "closes_at_ist", "unrealized_usd"]].round(4),
-                ["id", "trigger", "side", "origin_direction", "level_price", "entry_price", "unrealized_usd"],
+                        "entry_ist", "entry_price", "closes_at_ist", "unrealized_inr", "unrealized_usd"]].round(4),
+                ["id", "trigger", "side", "origin_direction", "level_price", "entry_price", "unrealized_inr"],
                 compact)
 
 # ================================================================= ACTIVITY TAB
@@ -651,11 +688,13 @@ with tab_act:
         td = td.sort_values("entry_time", ascending=False).copy()
         td["entry_ist"] = ist_str(td["entry_time"])
         td["exit_ist"] = ist_str(td["exit_time"]).fillna("") if td["exit_time"].notna().any() else ""
+        td["pnl_inr"] = td["pnl_usd"] * INR if "pnl_usd" in td.columns else float("nan")
         cols = ["id", "mode", "trigger", "status", "side", "pattern", "origin_direction", "level_invalidated", "entry_ist",
-                "entry_price", "lots", "qty", "exit_ist", "exit_price", "exit_reason", "bars_held", "pnl_usd",
+                "entry_price", "lots", "qty", "exit_ist", "exit_price", "exit_reason", "bars_held", "pnl_inr", "pnl_usd",
                 "future_high_excursion_pct", "source"]
         out = td[[c for c in cols if c in td.columns]].round(4)
-        show_df(out, ["id", "mode", "side", "entry_ist", "exit_reason", "pnl_usd", "future_high_excursion_pct"], compact)
+        show_df(out, ["id", "mode", "side", "entry_ist", "exit_reason", "pnl_inr", "pnl_usd",
+                      "future_high_excursion_pct"], compact)
         st.download_button("Download trades CSV (IST)", data=out.to_csv(index=False).encode("utf-8"),
                            file_name="paper_trades_ist.csv", mime="text/csv")
     st.subheader("Recent signals seen by the trader")
@@ -721,9 +760,14 @@ with tab_set:
         st.caption("Delta data trades the **lot quantity** above, the same way the Delta app takes a quantity: "
                    "1 lot = 0.001 BTC (about $59 at $59,000), 10 lots = 0.01 BTC. The USD figure is used only by "
                    "the other providers, and the fee follows whichever size is actually traded.")
-        initial_balance = c2.number_input("Initial balance (USD, applies on account reset)", 100.0, 10_000_000.0,
-                                          float(S["initial_balance"]), 100.0)
+        initial_balance_inr = c2.number_input("Initial balance (₹, applies on account reset)", 1000.0, 1_000_000_000.0,
+                                              round(float(S["initial_balance"]) * INR, 0), 1000.0)
+        initial_balance = float(initial_balance_inr) / INR
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
+        usd_inr_set = c2.number_input("USD → INR rate (0 = fetch the live rate)", 0.0, 1000.0,
+                                      float(S.get("usd_inr", 0.0)), 0.01)
+        st.caption(f"The balance is stored as **${initial_balance:,.2f}** at ₹{INR:,.2f}/$ and shown in rupees "
+                   f"everywhere. A saved rate above is used instead of the live one, so the rupee figures stay put.")
         max_hold_bars = st.number_input("Max holding candles (0 = hold until the 11pm close or the opposite signal)",
                                         0, 500, int(S["max_hold_bars"]), 1)
         st.caption("One position only: it flips on the opposite signal and closes at 11:00pm IST either way. "
@@ -743,6 +787,7 @@ with tab_set:
         try:
             new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
             new.update(lot_usd=lot_usd, size_lots=int(size_lots), initial_balance=initial_balance,
+                       usd_inr=float(usd_inr_set),
                        fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
                        allowed_origins=allowed_origins,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
@@ -757,9 +802,12 @@ with tab_set:
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
                f"provider {S['provider']} · one position, flips on the opposite signal · "
                f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · "
-               f"{S.get('size_lots', 1)} lot(s) of 0.001 BTC on Delta · ${S['lot_usd']:,.0f} notional elsewhere")
+               f"{S.get('size_lots', 1)} lot(s) of 0.001 BTC on Delta · ${S['lot_usd']:,.0f} notional elsewhere · "
+               f"₹{INR:,.2f}/$")
 
     with st.expander("Reset demo account"):
+        st.caption(f"Restarts at the saved initial balance of **{inr(S['initial_balance'])}** "
+                   f"(${S['initial_balance']:,.2f} at ₹{INR:,.2f}/$).")
         sure = st.checkbox("I understand this deletes all trades and restarts from the initial balance")
         if st.button("Reset account", disabled=not sure):
             try:

@@ -124,6 +124,19 @@ PROVIDER_CHOICES = ["Auto (fallback chain)", "Binance", "Delta Exchange India (B
 USD_PROVIDERS = {"Delta Exchange India (BTCUSD perp)", "Coinbase (USD)", "Kraken (USD)"}
 
 
+def usd_inr_rate(default: float = 88.0) -> float:
+    """Public USD -> INR rate (no key). Returns `default` if both public endpoints fail."""
+    for url in ("https://open.er-api.com/v6/latest/USD",
+                "https://api.frankfurter.dev/v1/latest?base=USD&symbols=INR"):
+        try:
+            rate = float(_get(url, {})["rates"]["INR"])
+            if rate > 0:
+                return rate
+        except Exception:                                  # noqa: BLE001 - try the next endpoint
+            continue
+    return default
+
+
 def contract_size(source: str) -> float:
     """BTC per lot for a candle source that trades fixed contracts, else 0 (USD-notional sizing)."""
     for name, size in CONTRACT_SIZE.items():

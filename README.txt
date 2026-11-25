@@ -103,6 +103,13 @@ Price provider (sidebar)
 Event rules (sidebar)
   Improved (default: stricter invalidation, one event per candle, cooldown 6) or Legacy (first version, cooldown 3).
 
+INR display
+  Equity, balance, unrealized and realized P&L, the equity curve, the open-position P&L and the
+  trades table (including its CSV) are shown in rupees, converted at a USD -> INR rate from a
+  public no-key source. Pin a rate in Settings ('USD -> INR rate', 0 = live) so the rupees stop
+  moving. The initial balance is entered in rupees and stored as USD at that rate; BTC prices,
+  entry/exit prices and fees stay in USD.
+
 Environment variables (set on Render, never in code)
   APP_PASSWORD               login password for the page
   UPSTASH_REDIS_REST_URL     from the Upstash console (REST API section)

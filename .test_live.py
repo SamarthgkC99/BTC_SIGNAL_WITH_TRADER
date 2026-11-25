@@ -271,6 +271,12 @@ chk("other providers keep the USD-notional sizing",
     bt4["lots"] is None and abs(bt4["qty"] - 20.0 / 59000.0) < 1e-15,
     f"qty={bt4['qty']:.8f} lots={bt4['lots']}")
 
+# ---------------------------------------------------------------- INR display
+_rate = providers.usd_inr_rate()
+chk("a USD->INR rate is available for the rupee display", _rate > 20, f"₹{_rate:,.2f} per $1")
+chk("the INR rate defaults to the live rate (0 = live, a saved value pins it)",
+    float(engine.merge_settings({}).get("usd_inr", -1)) == 0.0, engine.merge_settings({}).get("usd_inr"))
+
 print(f"\nBUILD: {engine.RULES_BUILD}")
 print("ALL PASS" if all(ROWS) else f"SOME FAILED ({ROWS.count(False)}/{len(ROWS)})")
 sys.exit(0 if all(ROWS) else 1)
