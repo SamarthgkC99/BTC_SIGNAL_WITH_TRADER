@@ -139,9 +139,10 @@ engine._consider(st_stop, S, mk("Bullish", "Strong close below level (candidate)
                  BASE, IV, "test", quote)
 st_stop["trades"][0]["mode"] = "TEST"
 engine.process(st_stop, S, closed, events, source, quote)
+_t0 = st_stop["trades"][0]
 chk("an older TEST-lane trade is adopted by worker cycle, not killed by the removed test lane",
-    st_stop["trades"][0]["mode"] == "WINDOW" and st_stop["trades"][0]["status"] == "OPEN",
-    f"{st_stop['trades'][0]['mode']} / {st_stop['trades'][0]['status']}")
+    _t0["mode"] == "WINDOW" and _t0.get("exit_reason") != "STOPPED",   # live candles may still hit the EMA20
+    f"{_t0['mode']} / {_t0['status']} / {_t0.get('exit_reason')}")
 
 # ---------------------------------------------------------------- two automatic trades per IST day
 st_cap = engine.new_state(S)

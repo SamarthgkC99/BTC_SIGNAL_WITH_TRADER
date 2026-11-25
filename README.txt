@@ -7,7 +7,7 @@ Files
   app.py        Streamlit page: Study | Live P&L | Trading activity | Settings
   signals.py    Signal engine (your original logic + the fixes)
   engine.py     Paper-trading rules, P&L, summaries
-  providers.py  Public candle APIs: Binance -> Bybit -> OKX -> KuCoin -> (Coinbase, Kraken = USD)
+  providers.py  Public candle APIs: Binance -> (Delta India BTCUSD perp, Coinbase, Kraken = USD) -> Bybit -> OKX -> KuCoin
   store.py      Upstash Redis (REST) or local JSON-file fallback
   render.yaml   Render blueprint (free plan, Singapore region)
 
@@ -88,9 +88,14 @@ Force trade now (the unlimited test lane)
   blocked shows the reason and places nothing.
 
 Price provider (sidebar)
-  Auto chain, or choose Binance / Bybit / OKX / KuCoin / Coinbase (USD) / Kraken (USD).
+  Auto chain, or choose Binance / Delta Exchange India (BTCUSD perp) / Bybit / OKX / KuCoin /
+  Coinbase (USD) / Kraken (USD).
   A named provider is tried first; tick "fall back" to let the others take over if it fails.
   'Apply these study settings + provider to the trader' saves them for the background worker.
+  Delta Exchange India (BTCUSD perpetual, public candles, no API key or account): USD-quoted and
+  INR-margined, up to 2000 candles per request. Fees are 0.05% taker and 0.02% maker per side on
+  the notional, plus 18% GST (0.059% / 0.0236% per side) - enter that in 'Fee per side (%)' in
+  Settings if you want Delta's costs in the paper P&L.
 
 Event rules (sidebar)
   Improved (default: stricter invalidation, one event per candle, cooldown 6) or Legacy (first version, cooldown 3).

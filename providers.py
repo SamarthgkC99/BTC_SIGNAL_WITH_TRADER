@@ -1,4 +1,4 @@
-"""Public BTC candle providers (no API keys). USDT markets first, USD markets last.
+"""Public BTC candle providers (no API keys). USDT markets first, USD markets last (Delta perp is USD-quoted).
 
 Every provider returns the same columns: open_time (UTC), open, high, low, close, volume.
 The last row may be a still-forming candle; callers use signals.closed_only().
@@ -17,6 +17,8 @@ BINANCE_BASES = [
     "https://api4.binance.com",
 ]
 TIMEOUT = 8
+DELTA_BASE = "https://api.india.delta.exchange"
+DELTA_RESOLUTION = {"5m": "5m", "15m": "15m", "1h": "1h"}
 
 
 def _finish(df: pd.DataFrame) -> pd.DataFrame:
@@ -47,6 +49,18 @@ def _binance(base, interval, limit):
     df.columns = COLS
     df["open_time"] = _ms(df["open_time"])
     return _finish(df)
+
+
+def _delta(interval, limit):
+    """Delta Exchange India BTCUSD perpetual (USD-quoted, INR-margined). Up to 2000 candles."""
+    end = int(time.time())
+    start = end - min(limit, 2000) * MINUTES[interval] * 60
+    data = _get(f"{DELTA_BASE}/v2/history/candles",
+                {"symbol": "BTCUSD", "resolution": DELTA_RESOLUTION[interval], "start": start, "end": end})
+    df = pd.DataFrame(data["result"])                     # newest first: time,o,h,l,c,volume (contracts)
+    df = df[["time", "open", "high", "low", "close", "volume"]]
+    df["time"] = _s(df["time"])
+    return _finish(df.rename(columns={"time": "open_time"}))
 
 
 def _bybit(interval, limit):
@@ -101,14 +115,17 @@ def _kraken(interval, limit):
     return _finish(df)
 
 
-PROVIDER_CHOICES = ["Auto (fallback chain)", "Binance", "Bybit", "OKX", "KuCoin", "Coinbase (USD)", "Kraken (USD)"]
-USD_PROVIDERS = {"Coinbase (USD)", "Kraken (USD)"}
+PROVIDER_CHOICES = ["Auto (fallback chain)", "Binance", "Delta Exchange India (BTCUSD perp)", "Bybit", "OKX",
+                    "KuCoin", "Coinbase (USD)", "Kraken (USD)"]
+USD_PROVIDERS = {"Delta Exchange India (BTCUSD perp)", "Coinbase (USD)", "Kraken (USD)"}
 
 
 def _groups(interval, limit):
     return {
         "Binance": [(f"Binance Spot ({b.split('//')[1]})", "USDT", lambda b=b: _binance(b, interval, limit))
                     for b in BINANCE_BASES],
+        "Delta Exchange India (BTCUSD perp)": [("Delta Exchange India (BTCUSD perp)", "USD",
+                                                 lambda: _delta(interval, limit))],
         "Bybit": [("Bybit Spot", "USDT", lambda: _bybit(interval, limit))],
         "OKX": [("OKX Spot", "USDT", lambda: _okx(interval, limit))],
         "KuCoin": [("KuCoin Spot", "USDT", lambda: _kucoin(interval, limit))],

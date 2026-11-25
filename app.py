@@ -166,6 +166,9 @@ with st.sidebar:
     provider = st.selectbox("Price provider", pch, index=pch.index(S["provider"]) if S["provider"] in pch else 0)
     provider_fallback = st.checkbox("If it fails, fall back to the other providers",
                                     value=bool(S["provider_fallback"]))
+    if provider.startswith("Delta"):
+        st.caption("Delta Exchange India BTCUSD perpetual: **0.05% taker / 0.02% maker per side** on the notional, "
+                   "plus 18% GST. Set 'Fee per side' to 0.059 (taker) or 0.0236 (maker) to include it in the paper P&L.")
     study_values = dict(interval=interval, bars=bars, atr_period=atr_period, impulse_atr=impulse_atr,
                         wick_body_ratio=wick_body_ratio, close_edge_pct=close_edge_pct,
                         min_spacing_atr=min_spacing_atr, forward_bars=forward_bars, cooldown_bars=cooldown_bars,
@@ -264,7 +267,8 @@ with tab_study:
         if provider != "Auto (fallback chain)" and not data_source.startswith(provider.split()[0]):
             st.info(f"Your chosen provider ({provider}) failed, so data comes from {data_source}.")
         if quote_currency != "USDT":
-            st.warning("USD fallback data is being displayed. The demo trader pauses on USD data unless you allow it in Settings.")
+            st.info(f"{quote_currency}-quoted data from {data_source}. The trader keeps running on it when you picked "
+                    f"that provider; on the Auto chain USD data needs 'Allow trading on USD data' in Settings.")
         if provider_errors:
             with st.expander("API fallback diagnostics"):
                 for item in provider_errors:
@@ -723,7 +727,7 @@ with tab_set:
                                        index=origins.index(S["allowed_origins"]))
         skip_inv = st.checkbox("Skip events that invalidate their level (breakout events)",
                                value=bool(S["skip_invalidated_events"]))
-        allow_usd = st.checkbox("Allow trading on USD fallback data (Coinbase/Kraken)",
+        allow_usd = st.checkbox("Allow trading on USD data (Delta perp, Coinbase, Kraken)",
                                 value=bool(S["allow_usd_fallback"]))
         sleep_outside = st.checkbox("Let Render sleep outside the trade window (saves free hours; needs an outside "
                                     "pinger scheduled for Tue–Thu evenings)", value=bool(S["sleep_outside_window"]))
