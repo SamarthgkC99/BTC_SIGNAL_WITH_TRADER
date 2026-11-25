@@ -243,27 +243,33 @@ chk("a SELL is never blocked by the EMA and exits on its first close across",
 
 # ---------------------------------------------------------------- fixed-size lots (Delta: 1 lot = 0.001 BTC)
 DELTA_SRC = "Delta Exchange India (BTCUSD perp)"
-bt = engine.build_trade(1, S, 1, "Touch / no defined pattern", "Bullish", False,
-                        "2026-11-24T14:35:00+00:00", 59000.0, "2026-11-24T15:05:00+00:00",
-                        "2026-11-24T15:10:00+00:00", 59000.0, DELTA_SRC, "WINDOW")
-chk("Delta data sizes the trade in whole 0.001 BTC lots (a $20 setting is one lot)",
+
+
+def _trade(sid, settings, src, price=59000.0):
+    return engine.build_trade(sid, settings, 1, "Touch / no defined pattern", "Bullish", False,
+                              "2026-11-24T14:35:00+00:00", price, "2026-11-24T15:05:00+00:00",
+                              "2026-11-24T15:10:00+00:00", price, src, "WINDOW")
+
+
+bt = _trade(1, S, DELTA_SRC)
+chk("Delta data trades the lot quantity, not the USD notional (default 1 lot)",
     bt["lots"] == 1 and abs(bt["qty"] - 0.001) < 1e-15,
     f"lots={bt['lots']} qty={bt['qty']} notional=${bt['lot_usd']:,.2f}")
-chk("the simulated fee follows the lot notional, not the $20 setting",
+chk("the simulated fee follows the lot notional (0.001 BTC x price)",
     abs(bt["lot_usd"] - 0.001 * 59000) < 1e-9 and abs(bt["contract_size"] - 0.001) < 1e-15,
     f"${bt['lot_usd']:,.2f}")
-bt2 = engine.build_trade(2, dict(S, lot_usd=500.0), -1, "x", "Bearish", False,
-                         "2026-11-24T14:35:00+00:00", 59000.0, "2026-11-24T15:05:00+00:00",
-                         "2026-11-24T15:10:00+00:00", 59000.0, DELTA_SRC, "WINDOW")
-chk("a larger USD setting becomes the nearest whole lots (8 lots for $500 at $59,000)",
-    bt2["lots"] == 8 and abs(bt2["qty"] - 0.008) < 1e-15,
+bt2 = _trade(2, dict(S, size_lots=10), DELTA_SRC)
+chk("10 lots is 0.01 BTC on Delta",
+    bt2["lots"] == 10 and abs(bt2["qty"] - 0.01) < 1e-15 and abs(bt2["lot_usd"] - 590.0) < 1e-9,
     f"lots={bt2['lots']} qty={bt2['qty']} notional=${bt2['lot_usd']:,.2f}")
-bt3 = engine.build_trade(3, S, 1, "x", "Bullish", False, "2026-11-24T14:35:00+00:00", 59000.0,
-                         "2026-11-24T15:05:00+00:00", "2026-11-24T15:10:00+00:00", 59000.0,
-                         "Binance Spot (data-api.binance.vision)", "WINDOW")
+bt3 = _trade(3, dict(S, lot_usd=500.0), DELTA_SRC)
+chk("the USD figure is ignored on Delta data",
+    bt3["lots"] == 1 and abs(bt3["lot_usd"] - 59.0) < 1e-9,
+    f"lots={bt3['lots']} notional=${bt3['lot_usd']:,.2f}")
+bt4 = _trade(4, S, "Binance Spot (data-api.binance.vision)")
 chk("other providers keep the USD-notional sizing",
-    bt3["lots"] is None and abs(bt3["qty"] - 20.0 / 59000.0) < 1e-15,
-    f"qty={bt3['qty']:.8f} lots={bt3['lots']}")
+    bt4["lots"] is None and abs(bt4["qty"] - 20.0 / 59000.0) < 1e-15,
+    f"qty={bt4['qty']:.8f} lots={bt4['lots']}")
 
 print(f"\nBUILD: {engine.RULES_BUILD}")
 print("ALL PASS" if all(ROWS) else f"SOME FAILED ({ROWS.count(False)}/{len(ROWS)})")

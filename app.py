@@ -714,11 +714,13 @@ with tab_set:
     st.subheader("Demo trader settings")
     with st.form("trade_settings"):
         c1, c2 = st.columns(2)
-        lot_usd = c1.number_input("Lot size (USD notional per trade)", 1.0, 100000.0, float(S["lot_usd"]), 1.0)
-        if providers.contract_size(provider) > 0 or providers.contract_size(S["provider"]) > 0:
-            st.caption("Delta Exchange India data is sized in whole **0.001 BTC lots** (1 lot): the trade uses the "
-                       "nearest whole lot to this USD figure, never less than one lot, so its real notional is "
-                       "0.001 BTC x price (about $59 at $59,000) and the fee follows that notional.")
+        lot_usd = c1.number_input("Lot size (USD notional) — other providers", 1.0, 100000.0,
+                                  float(S["lot_usd"]), 1.0)
+        size_lots = c2.number_input("Quantity (lots) — Delta BTCUSD, 1 lot = 0.001 BTC", 1, 100000,
+                                    int(S.get("size_lots", 1)), 1)
+        st.caption("Delta data trades the **lot quantity** above, the same way the Delta app takes a quantity: "
+                   "1 lot = 0.001 BTC (about $59 at $59,000), 10 lots = 0.01 BTC. The USD figure is used only by "
+                   "the other providers, and the fee follows whichever size is actually traded.")
         initial_balance = c2.number_input("Initial balance (USD, applies on account reset)", 100.0, 10_000_000.0,
                                           float(S["initial_balance"]), 100.0)
         fee_pct = c1.number_input("Fee per side (%) — simulated", 0.0, 1.0, float(S["fee_pct"]), 0.01)
@@ -740,7 +742,7 @@ with tab_set:
     if saved:
         try:
             new = engine.merge_settings(STORE.read("settings"))              # fresh copy, not the cached one
-            new.update(lot_usd=lot_usd, initial_balance=initial_balance,
+            new.update(lot_usd=lot_usd, size_lots=int(size_lots), initial_balance=initial_balance,
                        fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
                        allowed_origins=allowed_origins,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
@@ -754,7 +756,8 @@ with tab_set:
             st.error(f"Could not save settings: {type(exc).__name__}")
     st.caption(f"Trader currently uses: {S['interval']} candles · impulse ≥ {S['impulse_atr']}×ATR · "
                f"provider {S['provider']} · one position, flips on the opposite signal · "
-               f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · lot ${S['lot_usd']:,.0f}")
+               f"max hold {S['max_hold_bars'] or 'none'} · observe {S['forward_bars']} bars · "
+               f"{S.get('size_lots', 1)} lot(s) of 0.001 BTC on Delta · ${S['lot_usd']:,.0f} notional elsewhere")
 
     with st.expander("Reset demo account"):
         sure = st.checkbox("I understand this deletes all trades and restarts from the initial balance")
