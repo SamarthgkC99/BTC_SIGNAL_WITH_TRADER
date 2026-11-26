@@ -431,7 +431,7 @@ with tab_study:
                     f"is empty, and it cannot open a trade - the side and the entry only exist once a pattern fires. "
                     f"It is {engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td)} candle(s) old. There is no "
                     f"freshness rule any more: if its candle closed inside a trading window it is traded, however "
-                    f"old it is, up to {engine.MAX_WINDOW_TRADES_PER_DAY} automatic window trades per IST day.")
+                    f"old it is, up to {engine.max_window_trades(S)} automatic window trades per IST day.")
             show_df(view)
             st.download_button("Download event-study CSV (IST)", data=view.to_csv(index=False).encode("utf-8"),
                                file_name="btc_momentum_level_events_ist.csv", mime="text/csv")
@@ -513,7 +513,10 @@ with tab_pnl:
         st.success("😴 Trading is stopped with no open trade: the app stops pinging itself so Render can sleep "
                    "and save free instance hours. If it stays awake, an outside pinger (cron-job.org) is still calling it.")
     st.caption("Start = new window trades allowed (and the newest in-window signal is taken, however old) · Pause = no new "
-               "trades, the open one runs on, app stays awake · Stop = no new trades, open trade closed at the live price.")
+               "trades, the open one runs on, app stays awake · Stop = no new trades, open trade closed at the live price. "
+               f"Automatic entries are capped at {engine.max_window_trades(S)} per IST day"
+               + (", and the day's newest signal is carried into the window when it opens."
+                  if S.get("carry_in_signal", True) else "."))
     def _res(kind, text):
         st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
 
@@ -632,8 +635,8 @@ with tab_pnl:
             ls = dd.iloc[-1]
             ago_c = engine.signal_age(ls, closed["open_time"].iloc[-1], pd.Timedelta(minutes=iv_min))
             used_today = engine.auto_trades_on(state, pd.Timestamp.now(tz=IST).date())
-            rows.append(("Window trades today", "✅" if used_today < engine.MAX_WINDOW_TRADES_PER_DAY else "❌ BLOCKS",
-                         f"{used_today} of {engine.MAX_WINDOW_TRADES_PER_DAY} automatic window trades used today (IST) · "
+            rows.append(("Window trades today", "✅" if used_today < engine.max_window_trades(S) else "❌ BLOCKS",
+                         f"{used_today} of {engine.max_window_trades(S)} automatic window trades used today (IST) · "
                          f"Force/test trades are not counted and have no daily limit · no freshness rule: the newest "
                          f"in-window signal is traded however old it is ({ago_c} candle(s) now)"))
             rows.append(("Latest directional signal", "ℹ️",
@@ -669,11 +672,11 @@ with tab_pnl:
         st.dataframe(pd.DataFrame(rows, columns=["Check", "Result", "Detail"]), width="stretch", hide_index=True)
         st.caption("Read-only: this panel never places trades. A ❌ BLOCKS line is the reason the trader skips the "
                "newest signal — the Force button is blocked by the same lines, except the trading window, which your "
-               "click overrides, and the two-per-day cap, which does not apply to it.")
+               f"click overrides, and the {engine.max_window_trades(S)}-per-day cap, which does not apply to it.")
     st.caption("A forced trade shows the trigger 'manual'; a worker trade shows 'auto' or 'startup'. "
                "Force trade places one trade immediately at the live price. Your click is the consent for one rule "
                "only — the Tue–Thu 19:00–23:00 IST trading hours — so it trades outside the window too, and that "
-               "trade has no 23:00 close. It is never counted in the two-per-day automatic cap, so the test lane is "
+               "trade has no 23:00 close. It is never counted in the automatic window cap, so the test lane is "
                "unlimited. Everything else still applies: trading must be RUNNING, the side comes from the level's "
                "origin direction, your settings filters are checked, and only one position is held at a time.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
@@ -807,7 +810,14 @@ with tab_set:
                    f"everywhere. A saved rate above is used instead of the live one, so the rupee figures stay put.")
         max_hold_bars = st.number_input("Max holding candles (0 = hold until the 11pm close or the opposite signal)",
                                         0, 500, int(S["max_hold_bars"]), 1)
+        max_window_trades = st.number_input("Max automatic window trades per IST day (Force/test has no limit)",
+                                            1, 50, int(engine.max_window_trades(S)), 1)
+        carry_in = st.checkbox("When the window opens, also use that day's newest signal from earlier",
+                               value=bool(S.get("carry_in_signal", True)))
         st.caption("One position only: it flips on the opposite signal and closes at 11:00pm IST either way. "
+                   "A qualifying pattern lands inside the 4-hour window on barely one evening in three, so the "
+                   "carry-in uses the newest signal from earlier the same day at the window's first cycle "
+                   "(once a day, at the current price, and it still closes at 11:00pm). "
                    "Start / Pause / Stop are on the Live P&L tab.")
         origins = ["Both", "Bullish", "Bearish"]
         allowed_origins = st.selectbox("Only trade levels with origin direction", origins,
@@ -826,6 +836,7 @@ with tab_set:
             new.update(lot_usd=lot_usd, size_lots=int(size_lots), initial_balance=initial_balance,
                        usd_inr=float(usd_inr_set),
                        fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
+                       max_window_trades=int(max_window_trades), carry_in_signal=bool(carry_in),
                        allowed_origins=allowed_origins,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
                        sleep_outside_window=sleep_outside)

@@ -55,6 +55,8 @@ DEFAULT_SETTINGS = dict(
     interval="5m", bars=500, atr_period=14, impulse_atr=1.2, wick_body_ratio=1.5,
     close_edge_pct=70, min_spacing_atr=1.0, forward_bars=6, cooldown_bars=6, confirm_closes=3,
     rules_mode="Improved (fixes)",
+    max_window_trades=4,              # automatic window entries per IST day; Force/test is unlimited
+    carry_in_signal=True,             # at the window's first cycle, use that day's newest signal
 )
 
 
@@ -211,7 +213,15 @@ def signal_age(ev, latest_open, iv):
     return int((pd.Timestamp(latest_open) - pd.Timestamp(ev["event_time"])) / iv)
 
 
-MAX_WINDOW_TRADES_PER_DAY = 2        # automatic window entries per IST day; Force/test is unlimited
+MAX_WINDOW_TRADES_PER_DAY = 2        # fallback only: the live limit is the `max_window_trades` setting
+
+
+def max_window_trades(s):
+    """The day's automatic window-entry limit from the settings (Force/test is never capped)."""
+    try:
+        return max(1, int(s.get("max_window_trades", MAX_WINDOW_TRADES_PER_DAY)))
+    except (TypeError, ValueError):
+        return MAX_WINDOW_TRADES_PER_DAY
 
 
 def ist_date(ts):
@@ -267,7 +277,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "fx auto v15 2026-11-25"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "more window trades v16 2026-11-26"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -394,7 +404,8 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
     }
 
 
-def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_override=None, trigger="auto"):
+def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_override=None, trigger="auto",
+              allow_any_window=False):
     # The level's origin direction is the trade direction (Bullish -> BUY, Bearish -> SELL).
     # The pattern only decides WHEN to trade; it never overrides the side.
     side = side_from_origin(ev["origin_direction"])
@@ -409,14 +420,15 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
     }
     entry_iso = (latest_open + iv).isoformat() if entry_override is not None else close_ts.isoformat()
     used_today = auto_trades_on(state, ist_date(entry_iso))
+    cap = max_window_trades(s)
     if side == 0:
         reason = "the level has no origin direction (not Bullish or Bearish)"
-    elif not in_win:
+    elif not in_win and not allow_any_window:
         reason = "outside the Tue-Thu 19:00-23:00 IST trading window"
     elif s["window_lane"] != "RUNNING":
         reason = f"trading is {s['window_lane'].lower()}"
-    elif used_today >= MAX_WINDOW_TRADES_PER_DAY:
-        reason = (f"the day's {MAX_WINDOW_TRADES_PER_DAY} automatic window trades are already used "
+    elif used_today >= cap:
+        reason = (f"the day's {cap} automatic window trades are already used "
                   f"(a Force/test trade still works)")
     else:
         reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote, side)
@@ -436,6 +448,8 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
             "last_entry_time": entry_iso, "last_level_time": level_iso,
         }
         sig["action"] = "TRADED" + (f" (flipped {flipped} opposite position)" if flipped else "")
+        if allow_any_window and not in_win:
+            sig["action"] += " (carried in from earlier the same day)"
     state["signals"].append(sig)
 
 
@@ -462,6 +476,35 @@ def _catch_up(state, s, closed, events, iv, source, quote, now=None):
         state["trades"][-1]["window_end"] = None      # started late: nothing to close at 23:00
 
 
+def _carry_in(state, s, closed, events, iv, source, quote, now):
+    """The window is open and no automatic trade has been made today: take that day's newest signal,
+    even if its own candle closed before 19:00, at the current price.
+
+    The window is four hours long and a qualifying pattern lands inside it on barely one evening in
+    three, so this is what turns an evening into a trade. It never doubles up - one carry-in per IST
+    day, only before that day's first automatic trade - and the 23:00 close ends it like any other.
+    """
+    if not s.get("carry_in_signal", True) or s["window_lane"] != "RUNNING":
+        return
+    if not in_trade_window(now):                    # only inside Tue-Thu 19:00-23:00 IST
+        return
+    if events is None or events.empty or open_trades(state):
+        return
+    today = ist_date(now)
+    if auto_trades_on(state, today) > 0:
+        return
+    directional = events[events["signal_side"] != 0]
+    if directional.empty:
+        return
+    ev = directional.iloc[-1]
+    if ist_date(ev["event_time"] + iv) != today:
+        return
+    if (state.get("signal_state") or {}).get("last_traded_event") == ev["event_time"].isoformat():
+        return
+    _consider(state, s, ev, closed["open_time"].iloc[-1], iv, source, quote, closed,
+              entry_override=float(closed["close"].iloc[-1]), trigger="carry-in", allow_any_window=True)
+
+
 def process(state, s, closed, events, source, quote, now=None):
     """Pure state transition: apply new closed candles/events to the paper account."""
     now = now if now is not None else pd.Timestamp.now(tz="UTC")
@@ -484,6 +527,8 @@ def process(state, s, closed, events, source, quote, now=None):
     if state["last_candle_time"] is None:                 # first run: baseline history, then catch up
         state["last_candle_time"] = latest_open.isoformat()
         _catch_up(state, s, closed, events, iv, source, quote, now)
+        if in_trade_window(now):
+            _carry_in(state, s, closed, events, iv, source, quote, now)
         state["signals"] = state["signals"][-100:]
         return state
     last_seen = pd.Timestamp(state["last_candle_time"])
@@ -493,6 +538,8 @@ def process(state, s, closed, events, source, quote, now=None):
             _consider(state, s, ev, latest_open, iv, source, quote, closed)
     if prev_lane != "RUNNING" and s["window_lane"] == "RUNNING":    # Start pressed mid-window
         _catch_up(state, s, closed, events, iv, source, quote, now)
+    if in_trade_window(now):                                         # the window's first cycle
+        _carry_in(state, s, closed, events, iv, source, quote, now)
     state["last_candle_time"] = max(last_seen, latest_open).isoformat()
     state["signals"] = state["signals"][-100:]
     state["trades"] = state["trades"][-2000:]

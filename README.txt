@@ -30,9 +30,15 @@ Trading rules (all editable in Settings)
     same signal twice. A same-direction signal after the previous trade closed is a normal new
     trade. While a position of that direction is still open it is simply kept (one position at
     a time).
-  * Two automatic window trades per IST day. The worker's window entries are capped at two per
-    IST date, flips included. The Force button is the test lane: it is never counted and has no
-    daily limit.
+  * Automatic window trades per IST day: a Settings field (1-50, default 4). The worker's
+    window entries are capped at that many per IST date, flips included. The Force button is the
+    test lane: it is never counted and has no daily limit.
+  * Carry-in when the window opens (Settings, on by default). The window is only four hours,
+    and a qualifying pattern lands inside it on barely one evening in three, so at the window's
+    first cycle the trader also takes that IST day's newest signal even if its candle closed
+    before 19:00 (e.g. 14:15). It enters at the current price, keeps the 23:00 IST close, counts
+    toward the day's cap, and happens at most once a day - only when no automatic trade has
+    been made that day yet. Untick it to trade pattern signals inside the window only.
   * Flip on the opposite signal. An opposite signal closes the open position at that signal's
     price, win or lose (exit reason REVERSED), and immediately opens the other side. The Force
     button flips the same way, so you never have to close the old trade by hand first. A trade
@@ -62,7 +68,7 @@ Trading rules (all editable in Settings)
     A touch alone is not enough - the candle has to close across the EMA.
   * Start now = trade now. On startup, or when Start is pressed, the trader takes the newest
     signal if its own candle closed inside the trading window, however old it is, and it passes
-    the rules (the two-per-day cap included). It never replays older history, and a restart
+    the rules (the day's cap included). It never replays older history, and a restart
     cannot duplicate a trade. If the window is already shut at that moment the trade has no
     23:00 close and runs on the EMA20 exit.
   * future_high_excursion_pct is measured AFTER the signal, so it is analysis only,
@@ -84,7 +90,7 @@ Force trade now (the unlimited test lane)
   the trading hours. It places ONE trade instantly at the live price following the latest
   signal, inside or outside Tue-Thu 19:00-23:00 IST, and a trade forced outside the hours has
   no 23:00 close (it runs until the EMA20 exit, the opposite signal, Stop, or the time exit).
-  Forced trades are never counted in the two-per-day window cap, so the test lane is unlimited.
+  Forced trades are never counted in the automatic window cap, so the test lane is unlimited.
   Everything else still applies: Window trading must be RUNNING, the side comes from the
   level's origin direction, your level-invalidated / origin-filter / data-currency settings are
   checked, and only one position is held at a time (an opposite one is flipped first). Anything

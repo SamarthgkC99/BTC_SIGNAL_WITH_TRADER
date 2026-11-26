@@ -144,39 +144,95 @@ chk("an older TEST-lane trade is adopted by worker cycle, not killed by the remo
     _t0["mode"] == "WINDOW" and _t0.get("exit_reason") != "STOPPED",   # live candles may still hit the EMA20
     f"{_t0['mode']} / {_t0['status']} / {_t0.get('exit_reason')}")
 
-# ---------------------------------------------------------------- two automatic trades per IST day
-st_cap = engine.new_state(S)
-engine._consider(st_cap, S, mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=10),
+# ---------------------------------------------------------------- the daily window cap comes from settings
+chk("the cap setting exists and defaults to four", engine.max_window_trades(S) == 4, engine.max_window_trades(S))
+S_cap = dict(S, max_window_trades=2)
+st_cap = engine.new_state(S_cap)
+engine._consider(st_cap, S_cap, mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=10),
                  BASE, IV, "test", quote)
-engine._consider(st_cap, S, mk("Bullish", "Strong close below level (candidate)", -1, minutes_ago=6),
+engine._consider(st_cap, S_cap, mk("Bullish", "Strong close below level (candidate)", -1, minutes_ago=6),
                  BASE, IV, "test", quote)
-chk("two automatic window trades in one IST day are allowed", len(st_cap["trades"]) == 2,
+chk("two automatic window trades in one IST day are allowed when the cap is 2", len(st_cap["trades"]) == 2,
     len(st_cap["trades"]))
 third = mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=2)
-engine._consider(st_cap, S, third, BASE, IV, "test", quote)
-chk("a third automatic window trade on the same IST day is refused",
+engine._consider(st_cap, S_cap, third, BASE, IV, "test", quote)
+chk("a third automatic window trade on the same IST day is refused by a cap of 2",
     len(st_cap["trades"]) == 2 and "window trades" in st_cap["signals"][-1]["action"],
     st_cap["signals"][-1]["action"])
 chk("Force is not stopped by the cap",
-    engine.manual_entry_reason(st_cap, S, third, -1, BASE, IV, quote) is None)
+    engine.manual_entry_reason(st_cap, S_cap, third, -1, BASE, IV, quote) is None)
 
-st_force = engine.new_state(S)
+st_force = engine.new_state(S_cap)
 st_force["trades"] = [dict(t) for t in st_cap["trades"]]
 st_force["next_id"] = 9
 st_force["trades"].append(engine.build_trade(
-    9, S, -1, third["pattern"], "Bearish", False, pd.Timestamp(third["level_time"]).isoformat(),
+    9, S_cap, -1, third["pattern"], "Bearish", False, pd.Timestamp(third["level_time"]).isoformat(),
     third["level_price"], BASE.isoformat(), BASE.isoformat(), 59000.0, "test", "WINDOW", "manual", ema_entry=59100.0))
 chk("a forced trade does not use up the cap",
     engine.auto_trades_on(st_force, engine.ist_date(BASE)) == 2,
     engine.auto_trades_on(st_force, engine.ist_date(BASE)))
 
 next_base = BASE + pd.Timedelta(days=1)              # Wed 20:45 IST
-st_next = engine.new_state(S)
+st_next = engine.new_state(S_cap)
 st_next["trades"] = [dict(t) for t in st_cap["trades"]]
 st_next["next_id"] = 9
-engine._consider(st_next, S, mk("Bearish", "Strong close above level (candidate)", 1, base=next_base),
+engine._consider(st_next, S_cap, mk("Bearish", "Strong close above level (candidate)", 1, base=next_base),
                  next_base, IV, "test", quote)
 chk("the cap resets on the next IST day", len(st_next["trades"]) == 3, len(st_next["trades"]))
+
+st_four = engine.new_state(S)
+for n, (origin, side) in enumerate((("Bearish", 1), ("Bullish", -1), ("Bearish", 1), ("Bullish", -1))):
+    engine._consider(st_four, S, mk(origin, "Strong close above level (candidate)", side, minutes_ago=20 - 4 * n),
+                     BASE, IV, "test", quote)
+chk("the default cap allows four automatic window trades a day", len(st_four["trades"]) == 4, len(st_four["trades"]))
+engine._consider(st_four, S, mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=1),
+                 BASE, IV, "test", quote)
+chk("the fifth is refused with the default cap",
+    len(st_four["trades"]) == 4 and "4 automatic window trades" in st_four["signals"][-1]["action"],
+    st_four["signals"][-1]["action"])
+
+# ---------------------------------------------------------------- carry-in at the window's first cycle
+NOW_T = pd.Timestamp("2026-11-24T14:00:00Z")         # Tue 19:30 IST, window just opened
+
+
+def ctx(now=NOW_T, price=59000.0):
+    idx = pd.date_range(now.floor("5min") - pd.Timedelta(minutes=25), periods=6, freq="5min", tz="UTC")
+    return pd.DataFrame({"open_time": idx, "open": price, "high": price, "low": price, "close": price})
+
+
+def ev_at(ts_iso, origin="Bullish", side=1):
+    return {"event_time": pd.Timestamp(ts_iso), "pattern": "Strong close above level (candidate)",
+            "signal_side": side, "origin_direction": origin, "event_price": 59000.0,
+            "level_invalidated": False, "level_time": pd.Timestamp(ts_iso) - pd.Timedelta(hours=3),
+            "level_price": 58950.0, "level_id": 3}
+
+
+CLOSE_C = ctx()
+SAME_DAY = pd.DataFrame([ev_at("2026-11-24T05:30:00Z")])      # Tue 11:00 IST, long before 19:00
+st_c = engine.new_state(S)
+engine._carry_in(st_c, S, CLOSE_C, SAME_DAY, IV, "test", quote, NOW_T)
+chk("the window's first cycle trades that day's earlier signal",
+    len(st_c["trades"]) == 1 and "carried in" in st_c["signals"][-1]["action"],
+    st_c["signals"][-1]["action"] if st_c["signals"] else "no signal seen")
+chk("a carried-in trade is entered at the current price and still closes at 23:00 IST",
+    bool(st_c["trades"]) and st_c["trades"][0]["entry_price"] == 59000.0
+    and pd.Timestamp(st_c["trades"][0]["window_end"]) == pd.Timestamp("2026-11-24T17:30:00Z"),
+    st_c["trades"][0].get("window_end") if st_c["trades"] else "no trade")
+engine._carry_in(st_c, S, CLOSE_C, SAME_DAY, IV, "test", quote, NOW_T)
+chk("the carry-in never doubles up on the same day", len(st_c["trades"]) == 1, len(st_c["trades"]))
+
+st_old = engine.new_state(S)
+engine._carry_in(st_old, S, CLOSE_C, pd.DataFrame([ev_at("2026-11-23T05:30:00Z")]), IV, "test", quote, NOW_T)
+chk("a signal from a previous day is not carried in", not st_old["trades"], len(st_old["trades"]))
+
+S_nocarry = dict(S, carry_in_signal=False)
+st_off = engine.new_state(S_nocarry)
+engine._carry_in(st_off, S_nocarry, CLOSE_C, SAME_DAY, IV, "test", quote, NOW_T)
+chk("unticking the carry-in leaves the window with pattern signals only", not st_off["trades"], len(st_off["trades"]))
+
+st_nw = engine.new_state(S)
+engine._carry_in(st_nw, S, CLOSE_C, SAME_DAY, IV, "test", quote, pd.Timestamp("2026-11-24T09:00:00Z"))
+chk("the carry-in only works while the window is open", not st_nw["trades"], len(st_nw["trades"]))
 
 # ---------------------------------------------------------------- Force guards that still hold
 chk("Force refuses without an origin",
