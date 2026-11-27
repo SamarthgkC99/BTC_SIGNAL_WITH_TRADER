@@ -92,7 +92,7 @@ def read_key(key):
         return None, f"{type(exc).__name__}: {exc}"
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_klines(interval: str, limit: int, provider: str, fallback: bool):
     return providers.fetch_candles(interval, limit, allow_usd=True, provider=provider, fallback=fallback)
 
@@ -251,10 +251,10 @@ with st.sidebar:
         except Exception as exc:                                # noqa: BLE001
             st.error(f"Could not save: {type(exc).__name__}")
     st.divider()
-    auto_refresh = st.checkbox("Auto-refresh every 30 seconds", value=True)
+    auto_refresh = st.checkbox("Auto-refresh every 5 seconds", value=True)
     refresh = st.button("Fetch fresh data now", type="primary")
     if auto_refresh:
-        st_autorefresh(interval=30_000, key="btc_market_auto_refresh")
+        st_autorefresh(interval=5_000, key="btc_market_auto_refresh")
 
 params = Params(atr_period=atr_period, impulse_atr=impulse_atr, wick_body_ratio=wick_body_ratio,
                 close_edge_pct=close_edge_pct, min_spacing_atr=min_spacing_atr, forward_bars=forward_bars,
@@ -333,7 +333,7 @@ with tab_study:
                 f"O {live['open']:,.2f} / H {live['high']:,.2f} / L {live['low']:,.2f} / "
                 f"latest {live['close']:,.2f} {quote_currency}. Provisional until the interval ends.")
         st.caption(f"Active data source: {data_source} · Quote currency: {quote_currency} · "
-                   f"Candles loaded: {len(df)} · Auto-refresh: {'on (30s)' if auto_refresh else 'off'}")
+                   f"Candles loaded: {len(df)} · Auto-refresh: {'on (5s)' if auto_refresh else 'off'}")
         if provider != "Auto (fallback chain)" and not data_source.startswith(provider.split()[0]):
             st.info(f"Your chosen provider ({provider}) failed, so data comes from {data_source}.")
         if quote_currency != "USDT":
@@ -596,7 +596,7 @@ with tab_pnl:
             except Exception as exc:                                        # noqa: BLE001
                 _res("error", f"Could not place the test trade: {type(exc).__name__}")
     res = st.session_state.get("test_result")
-    if res:                                                    # stays visible across the 30-second auto-refresh
+    if res:                                                    # stays visible across the 5-second auto-refresh
         {"success": st.success, "warning": st.warning, "error": st.error}[res[0]](f"{res[2]} IST · {res[1]}")
     with st.expander("🔎 Why isn't it trading? (live diagnostics)"):
         rows, now_u = [], pd.Timestamp.now(tz="UTC")
