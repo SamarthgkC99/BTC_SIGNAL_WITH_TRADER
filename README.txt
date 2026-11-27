@@ -30,6 +30,12 @@ Trading rules (all editable in Settings)
     same signal twice. A same-direction signal after the previous trade closed is a normal new
     trade. While a position of that direction is still open it is simply kept (one position at
     a time).
+  * The EMA20 decides which side the Force button may enter. Force only uses TODAY's levels: it
+    takes today's newest level whose origin side fits the EMA20 (a BUY above it, a SELL below
+    it), so a level from an earlier day is never carried into today. Automatic window trades are
+    NOT filtered this way: they still follow the newest signal described above, because a 60-day
+    backtest of this rule on automatic entries lost every winner (11 trades, 0 wins). The exit
+    is unchanged: the EMA20 still closes a position only on a candle CLOSE through it.
   * Automatic window trades per IST day: a Settings field (1-50, default 4). The worker's
     window entries are capped at that many per IST date, flips included. The Force button is the
     test lane: it is never counted and has no daily limit.
@@ -88,8 +94,10 @@ Trader controls (Live P&L tab)
 
 Force trade now (the unlimited test lane)
   A manual test entry, so YOU are the consent for the one thing a human click should decide:
-  the trading hours. It places ONE trade instantly at the live price following the latest
-  signal, inside or outside Tue-Thu 19:00-23:00 IST, and a trade forced outside the hours has
+  the trading hours. It places ONE trade instantly at the live price following TODAY's newest
+  level whose origin side fits the EMA20 (a BUY above it, a SELL below it). A level from an
+  earlier day is never carried into today: yesterday's bullish level cannot put on today's BUY.
+  It works inside or outside Tue-Thu 19:00-23:00 IST, and a trade forced outside the hours has
   no 23:00 close (it runs until the EMA20 exit, the opposite signal, Stop, or the time exit).
   Forced trades are never counted in the automatic window cap, so the test lane is unlimited.
   Everything else still applies: Window trading must be RUNNING, the side comes from the
