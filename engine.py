@@ -160,12 +160,15 @@ def _process_exits(state, closed, iv):
     for t in state["trades"]:
         if t["status"] != "OPEN":
             continue
-        ev_open, h = pd.Timestamp(t["event_open_time"]), int(t["horizon"])
+        # Exit only on candles that opened after the ENTRY candle. A carry-in trade is entered at
+        # the current price, much later than the signal candle it came from, so using the signal's
+        # open time here would let candles from before the entry close the position.
+        entry_open, h = pd.Timestamp(t["entry_time"]) - iv, int(t["horizon"])
         wend = pd.Timestamp(t["window_end"]) if t.get("window_end") else None
-        if len(closed) and closed["open_time"].iloc[0] > ev_open + iv:    # candles after entry are no longer loaded
+        if len(closed) and closed["open_time"].iloc[0] > entry_open:      # candles after entry are no longer loaded
             close_trade(t, float(closed["close"].iloc[-1]), "HISTORY", (closed["open_time"].iloc[-1] + iv).isoformat())
             continue
-        after = closed[closed["open_time"] > ev_open]
+        after = closed[closed["open_time"] > entry_open]
         if h > 0:
             after = after.head(h)
         entry_side, _ema = _entry_ema_side(t, closed, iv)
@@ -293,7 +296,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema20 trend exit v17 2026-11-27"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema20 trend exit v18 2026-11-27"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
