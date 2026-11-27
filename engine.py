@@ -4,14 +4,15 @@ Rules
   * Only the historical study's trading window is traded: Tue/Wed/Thu 19:00-23:00 IST,
     judged by the signal candle's close time. Signals outside it are logged and skipped.
   * The side comes from the level's origin direction, exactly as the Historical event study
-    shows it: a Bullish-origin level -> BUY, a Bearish-origin level -> SELL. The pattern of
-    the event (strong close above/below, rejection) is only the trigger, never the direction,
-    so a bearish-origin level can never produce a BUY. Nothing lifts this: no setting and not
-    the Force button.
-  * No signal-freshness rule and no repeat-direction rule. However old the newest signal is,
-    if its own candle closed inside a trading window the trader takes it (once per signal event,
-    so a restart cannot trade the same one twice). The same direction can be traded again on a
-    new signal; while that position is still open the single position is simply kept.
+    shows it: a Bullish-origin level -> BUY, a Bearish-origin level -> SELL. Every level touch
+    is a signal: a strong close or a rejection is only a label on the event, never a filter and
+    never the direction, so a bearish-origin level can never produce a BUY. Nothing lifts this:
+    no setting and not the Force button.
+  * Today's levels only. The trader enters only on a level from the current IST day, so a
+    restart, a catch-up or a carry-in cannot carry yesterday's signal into today (once per
+    signal event, so a restart cannot trade the same one twice). The same direction can be
+    traded again on a new signal; while that position is still open the single position is
+    simply kept.
   * Two automatic window trades per IST day. Entries the worker places are capped at two per IST
     date (flips included). The Force button is the unlimited test lane: it is not counted and
     never capped.
@@ -332,7 +333,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema20 trend exit v21 2026-11-28"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema20 trend exit v22 2026-11-28"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):

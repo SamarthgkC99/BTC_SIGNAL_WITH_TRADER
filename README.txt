@@ -19,12 +19,12 @@ Trading rules (all editable in Settings)
   * Origin direction. BUY only when the level's originating impulse was bullish, SELL only when
     it was bearish. The trade side comes from the level's origin_direction, exactly as the
     Historical event study table shows it: Bullish-origin level -> BUY, Bearish-origin level
-    -> SELL. The event pattern only decides WHEN that trade happens; it never sets the side,
-    so a bearish-origin level can never produce a BUY. This is absolute: there is no switch
+    -> SELL. Every level touch is a signal now: a strong close or a rejection is only a label
+    on the event, never a filter and never the side, so a bearish-origin level can never produce
+    a BUY and no touch is thrown away as "not a signal". This is absolute: there is no switch
     for it and the Force button does not lift it. If a level has no Bullish/Bearish origin at
-    all, the trade is skipped - the pattern's own side is never used as a fallback, so a signal
-    can never sneak in as a BUY on a bearish setup. The event study shows the side the origin
-    gives each row in its trade_side_by_origin column.
+    all, the trade is still skipped. The event study shows the side the origin gives each row in
+    its trade_side_by_origin column.
   * Today's levels only. The trader enters only on a level from the current IST day, in the
     window and in the Force button alike. A restart, a catch-up or a carry-in can no longer
     carry yesterday's signal into today: rows from earlier days are history. A restart still
@@ -45,7 +45,8 @@ Trading rules (all editable in Settings)
     first cycle the trader also takes that IST day's newest signal even if its candle closed
     before 19:00 (e.g. 14:15). It enters at the current price, keeps the 23:00 IST close, counts
     toward the day's cap, and happens at most once a day - only when no automatic trade has
-    been made that day yet. Untick it to trade pattern signals inside the window only.
+    been made that day yet. Untick it to trade only signals whose own candle closed inside the
+    window.
   * Flip on the opposite signal. An opposite signal closes the open position at that signal's
     price, win or lose (exit reason REVERSED), and immediately opens the other side. The Force
     button flips the same way, so you never have to close the old trade by hand first. A trade
