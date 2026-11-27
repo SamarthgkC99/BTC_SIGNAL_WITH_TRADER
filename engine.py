@@ -267,6 +267,38 @@ def ema_side(price, ema):
     return 1 if price > ema else (-1 if price < ema else 0)
 
 
+def ema_side_ok(price, ema, side):
+    """True when the trade's side fits where price sits relative to the EMA20 (BUY above, SELL below).
+    None when the EMA or the side is unknown, so a caller can skip the check."""
+    if ema is None or side == 0 or pd.isna(ema):
+        return None
+    return (float(price) > float(ema)) if side > 0 else (float(price) < float(ema))
+
+
+def force_entry_guard(price, ema, atr, ev, max_atr=2.0):
+    """Why the Force button must not follow this signal at the current price, or None when it may.
+
+    A signal is only usable while price still sits where it fired: the live price must be within
+    max_atr x ATR of the signal's own entry price, and the signal's side must agree with the side
+    of the EMA20. This is what stops a day-old BUY being forced into a market that has already
+    fallen far below its level.
+    """
+    side = side_from_origin(ev["origin_direction"])
+    if side == 0:
+        return "the level has no origin direction (not Bullish or Bearish)"
+    entry = float(ev["event_price"])
+    price = float(price)
+    if atr is not None and pd.notna(atr) and float(atr) > 0:
+        drift = abs(price - entry)
+        if drift > max_atr * float(atr):
+            return (f"the signal is stale: price {price:,.2f} is {drift:,.2f} away from its entry "
+                    f"{entry:,.2f}, more than {max_atr:g} x ATR ({float(atr):,.2f})")
+    if ema_side_ok(price, ema, side) is False:
+        return (f"the trend is against this signal: it is {SIDE_LABEL.get(side, side)} but price {price:,.2f} "
+                f"is {'below' if side > 0 else 'above'} the EMA20 {float(ema):,.2f}")
+    return None
+
+
 def ema_at(closed, ts):
     """The EMA20 value on the candle that opened at `ts` (None when that candle is not loaded)."""
     if closed is None or len(closed) == 0:
@@ -280,23 +312,29 @@ def ema_at(closed, ts):
     return float(row["ema20"].iloc[0])
 
 
-def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
+def manual_entry_reason(state, s, ev, side, latest_open, iv, quote, price=None, ema=None, atr=None):
     """Everything the Force button checks before it may place a trade.
 
     Your click is the consent for exactly one rule: the trading hours (the caller ignores them).
     The lane, the origin direction, your settings filters and the one-position-at-a-time rule still
     apply, and the two-per-day window cap does not: the Force lane is the unlimited test lane.
+    When the caller passes the live price (plus the EMA20 and ATR), a signal that no longer matches
+    the market is refused too: see force_entry_guard.
     Returns the blocking reason, or None when the trade may be placed.
     """
     if s["window_lane"] != "RUNNING":
         return f"trading is {s['window_lane'].lower()}"
     if side == 0:
         return "the level has no origin direction (not Bullish or Bearish)"
+    if price is not None:
+        guard = force_entry_guard(price, ema, atr, ev)
+        if guard:
+            return guard
     return block_reason(state, s, ev["origin_direction"], bool(ev["level_invalidated"]),
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema20 trend exit v18 2026-11-27"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema20 trend exit v19 2026-11-28"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):

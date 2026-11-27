@@ -542,8 +542,13 @@ with tab_pnl:
                 engine.adopt_legacy_lane(fresh)                             # old TEST-lane trades flip like any other
                 # Your click is the consent for the trading hours only. The origin direction, your
                 # settings filters and the one-position-at-a-time rule still apply.
+                ema_now = (float(dfi["ema20"].iloc[-1])
+                           if ("ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
+                atr_now = (float(dfi["atr"].iloc[-1])
+                           if ("atr" in dfi and pd.notna(dfi["atr"].iloc[-1])) else None)
                 why = engine.manual_entry_reason(fresh, S, last, side, closed["open_time"].iloc[-1],
-                                                 iv_td, quote_currency)
+                                                 iv_td, quote_currency,
+                                                 price=float(live_price), ema=ema_now, atr=atr_now)
                 if why:
                     hint = next((h for k, h in {
                         "trading is": "Press ▶ Start to allow new trades, then Force again.",
@@ -551,6 +556,12 @@ with tab_pnl:
                                                  "the opposite signal or Stop before forcing another one.",
                         "a BUY is already open": "One position at a time: let the open trade exit on the EMA20, "
                                                 "the opposite signal or Stop before forcing another one.",
+                        "the signal is stale": "Force now follows a signal only while price is still near where it "
+                                               "fired (within 2 x ATR), so this one is too old to enter here. Wait for "
+                                               "the next signal.",
+                        "the trend is against this signal": "The side always comes from the level's origin, so the bot "
+                                                            "will never flip it: a BUY above a falling market is skipped. "
+                                                            "Wait for a Bearish-origin level to signal for a SELL.",
                         "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
                                                  "origin rule cannot pick a side. Wait for the next signal.",
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
@@ -646,7 +657,8 @@ with tab_pnl:
             rows.append(("Window trades today", "✅" if used_today < engine.max_window_trades(S) else "❌ BLOCKS",
                          f"{used_today} of {engine.max_window_trades(S)} automatic window trades used today (IST) · "
                          f"Force/test trades are not counted and have no daily limit · no freshness rule: the newest "
-                         f"in-window signal is traded however old it is ({ago_c} candle(s) now)"))
+                         f"in-window signal is traded however old it is ({ago_c} candle(s) now); only the Force "
+                         f"button checks that price is still near the signal"))
             rows.append(("Latest directional signal", "ℹ️",
                          f"{SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'} · "
                          f"{ls['pattern'].replace(' (candidate)', '')} · "
@@ -686,7 +698,10 @@ with tab_pnl:
                "only — the Tue–Thu 19:00–23:00 IST trading hours — so it trades outside the window too, and that "
                "trade has no 23:00 close. It is never counted in the automatic window cap, so the test lane is "
                "unlimited. Everything else still applies: trading must be RUNNING, the side comes from the level's "
-               "origin direction, your settings filters are checked, and only one position is held at a time.")
+               "origin direction, your settings filters are checked, and only one position is held at a time. "
+               "Force also refuses a signal that no longer fits the market: if price has moved more than 2 x ATR "
+               "away from where the signal fired, or the signal's side is against the EMA20 (a BUY below it, a SELL "
+               "above it), nothing is placed and the page tells you why.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
