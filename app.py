@@ -585,8 +585,10 @@ with tab_pnl:
                                f"{last['pattern'].replace(' (candidate)', '')} signal from {ago} candle(s) ago — "
                                f"level {last['level_price']:,.2f} (origin {last['origin_direction']})"
                                f" = {SIDE_LABEL[side]}. Below is the level and origin the side came from."
-                               + (f" EMA20 {ema_ref:,.2f} is {'below' if live_price > ema_ref else 'above'} the entry, so "
-                                  f"the EMA exit needs a candle close {'below' if live_price > ema_ref else 'above'} it."
+                               + (f" EMA20 {ema_ref:,.2f} is {'below' if live_price > ema_ref else 'above'} the entry; "
+                                  f"this {SIDE_LABEL[side]} exits only when a candle CLOSES "
+                                  f"{'above' if side < 0 else 'below'} the EMA20, so a move "
+                                  f"{'lower' if side < 0 else 'higher'} through it is held."
                                   if ema_ref else "")
                                + (f" It closed {flipped} opposite position(s) first." if flipped else "")
                                + ("" if in_win_now else " Forced outside the trading hours; it has no 23:00 close "
@@ -617,10 +619,11 @@ with tab_pnl:
                      f"{'inside' if win_now else 'outside'} Tue–Thu 19:00–23:00 IST · trading is {S['window_lane']}"))
         if data_ok and live_price and "ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1]):
             ema_live = float(dfi["ema20"].iloc[-1])
-            rows.append(("EMA20 profit-protection exit", "ℹ️",
+            rows.append(("EMA20 trend exit", "ℹ️",
                          f"EMA20 {ema_live:,.2f} · price {live_price:,.2f} is "
-                         f"{'above' if live_price > ema_live else 'below'} it · a trade exits when a candle CLOSES on "
-                         f"the other side of the EMA20 than the side its entry price was on · the EMA never blocks an entry"))
+                         f"{'above' if live_price > ema_live else 'below'} it · a SELL exits only when a candle CLOSES "
+                         f"above the EMA20 and a BUY only on a close below it · the crossing that goes with the trade "
+                         f"(a SELL falling through) is held · the EMA never blocks an entry"))
         rows.append(("Rules build running", "ℹ️", engine.RULES_BUILD +
                      " · a BUY can never follow a bearish-origin level"))
         rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "

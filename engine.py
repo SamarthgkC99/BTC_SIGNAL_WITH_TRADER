@@ -21,12 +21,14 @@ Rules
     the Force button). Fixed notional per trade (lot_usd). There is no stop-loss or
     take-profit: a trade runs until the EMA20 exit, the opposite signal, the 23:00 IST close,
     a manual Stop, or the optional max_hold_bars time exit.
-  * EMA20 profit protection. At entry the trader records which side of the EMA20 (20-candle EMA
-    on the trader's own interval) the price is on. The trade exits (reason EMA20) on the first
-    candle that CLOSES on the other side of the EMA20 than the entry side: a SELL entered above
-    the EMA closes when a candle closes below it; a SELL entered below the EMA (EMA above the
-    price) closes when a candle closes above it; a BUY is mirrored. Where the EMA sits at entry
-    never blocks the trade - it only decides which crossing is the exit.
+  * EMA20 trend exit (close only). A 20-candle EMA on the trader's own interval. A SELL is held
+    while the price stays below the EMA20 and exits (reason EMA20) the first time a candle
+    CLOSES above it; a BUY is mirrored and exits on a close below it. The crossing that goes
+    with the trade - a SELL falling through the EMA, a BUY rising through it - is the move being
+    followed, so it never closes the trade. Where the EMA sits at entry never blocks the trade.
+    A trade entered on the wrong side (a SELL signalled above the EMA, a BUY below it) is managed
+    once a candle has first closed on its own side, so the entry itself cannot trigger the exit.
+    A touch of the EMA is never enough: the candle has to close across it.
   * Every window trade is closed at 23:00 IST, profit or loss, if still open.
   * The Force button is a manual test entry: your click is the consent for the trading hours
     only, so it may trade outside the window (and such a trade has no 23:00 close). Every other
@@ -135,12 +137,21 @@ def _entry_ema_side(t, closed, iv):
     return side, ema
 
 
-def _crossed_ema(row, entry_side):
-    """True when this candle's close is on the other side of the EMA20 than the entry was."""
+def _ema_exit_signal(row, side_num, armed):
+    """(exit_now, armed) for this candle under the EMA20 trend exit.
+
+    A SELL exits when a candle CLOSES above the EMA20, a BUY when it closes below it. The other
+    crossing (a SELL closing below, a BUY closing above) is the trade's own direction, so it is
+    held - it only arms the exit. A trade entered on the wrong side of the EMA therefore cannot
+    be closed out by the entry itself: it is managed after its first close on its own side.
+    """
     ema = getattr(row, "ema20", None)
     if ema is None or pd.isna(ema):
-        return False
-    return (float(row.close) - float(ema)) * int(entry_side) < 0
+        return False, armed
+    close, ema = float(row.close), float(ema)
+    if (close - ema) * int(side_num) > 0:      # closed on the trade's own side (SELL below, BUY above)
+        return False, True
+    return armed, armed                        # closed against the trade: exit once it was armed
 
 
 def _process_exits(state, closed, iv):
@@ -158,15 +169,20 @@ def _process_exits(state, closed, iv):
         if h > 0:
             after = after.head(h)
         entry_side, _ema = _entry_ema_side(t, closed, iv)
+        side_num = int(t["side_num"])
+        # Armed = the trade already sits on its own side of the EMA (a SELL entered below it),
+        # so the first close against it is an exit. A wrong-side entry arms on its first own-side close.
+        armed = bool(entry_side) and entry_side * side_num > 0
         for k, row in enumerate(after.itertuples(index=False), start=1):
             if wend is not None and row.open_time + iv >= wend:
                 price, reason = float(row.close), "WINDOW_END"
             elif h > 0 and k >= h:
                 price, reason = float(row.close), "TIME"
-            elif entry_side and _crossed_ema(row, entry_side):
-                price, reason = float(row.close), "EMA20"     # touch, then a close across the EMA
             else:
-                continue
+                hit, armed = _ema_exit_signal(row, side_num, armed)
+                if not hit:
+                    continue
+                price, reason = float(row.close), "EMA20"     # a candle closed against the trade's side
             close_trade(t, price, reason, (row.open_time + iv).isoformat(), k, after.iloc[:k])
             break
 
@@ -277,7 +293,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "more window trades v16 2026-11-26"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema20 trend exit v17 2026-11-27"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -396,8 +412,8 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
         "event_open_time": event_open_time_iso, "entry_time": entry_time_iso,
         "entry_price": entry, "lot_usd": lot_usd, "qty": qty, "lots": lots, "contract_size": contract or None,
         "horizon": int(s["max_hold_bars"]), "fee_pct": float(s["fee_pct"]), "source": source,
-        # The EMA20 exit is anchored to the side of the EMA the entry price was on, so where the
-        # EMA sits can never block an entry - it only decides which crossing closes the trade.
+        # Where the EMA sits at entry never blocks a trade. The stored side lets the EMA20 trend
+        # exit arm a wrong-side entry only after its first close on the trade's own side.
         "ema_entry": None if ema_entry is None else float(ema_entry),
         "ema_entry_side": 0 if ema_entry is None else ema_side(float(entry), float(ema_entry)),
         "window_end": _window_end_iso(entry_time_iso) if mode == "WINDOW" else None,

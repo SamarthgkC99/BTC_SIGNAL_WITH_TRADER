@@ -269,33 +269,45 @@ flat = [100.0] * 25
 print(f"     EMA20 with 25 flat 100 candles and one 105 print: "
       f"{signals.add_ema(candles(flat + [105.0]))['ema20'].iloc[-1]:,.2f}")
 
+# A SELL taken above the EMA is NOT closed when it falls through the EMA - the cross down is the move
+# it is riding - and it closes only when a candle closes back above the EMA.
 t = ema_exit(flat + [105.0, 106.0, 95.0], -1, 25, 105.0)
-chk("SELL entered ABOVE the EMA20 exits when a candle closes below it",
-    t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 95.0) < 1e-9 and t["ema_entry_side"] == 1,
-    f"{t['exit_reason']} @ {t['exit_price']} · entry side {t['ema_entry_side']}")
+chk("a SELL entered above the EMA20 is held when the price crosses down through it",
+    t["status"] == "OPEN" and t["ema_entry_side"] == 1, t.get("exit_reason"))
 
+t = ema_exit(flat + [105.0, 95.0, 104.0], -1, 25, 105.0)
+chk("that SELL exits only when a candle closes back ABOVE the EMA20",
+    t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 104.0) < 1e-9,
+    f"{t.get('exit_reason')} @ {t.get('exit_price')}")
+
+# The mirror for a BUY: climbing through the EMA is held, closing back below it is the exit.
+t = ema_exit(flat + [95.0, 96.0, 103.0], 1, 25, 95.0)
+chk("a BUY entered below the EMA20 is held when the price crosses up through it",
+    t["status"] == "OPEN", t.get("exit_reason"))
+
+t = ema_exit(flat + [95.0, 103.0, 95.0], 1, 25, 95.0)
+chk("that BUY exits only when a candle closes back BELOW the EMA20",
+    t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 95.0) < 1e-9,
+    f"{t.get('exit_reason')} @ {t.get('exit_price')}")
+
+# Entries already on their own side of the EMA exit on the first close against them.
 t = ema_exit(flat + [95.0, 96.0, 103.0], -1, 25, 95.0)
-chk("SELL entered BELOW the EMA20 (EMA above the price) exits when a candle closes above it",
+chk("a SELL entered below the EMA20 exits when a candle closes above it",
     t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 103.0) < 1e-9 and t["ema_entry_side"] == -1,
     f"{t['exit_reason']} @ {t['exit_price']} · entry side {t['ema_entry_side']}")
 
 t = ema_exit(flat + [105.0, 104.0, 95.0], 1, 25, 105.0)
-chk("BUY entered ABOVE the EMA20 exits when a candle closes below it",
+chk("a BUY entered above the EMA20 exits when a candle closes below it",
     t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 95.0) < 1e-9 and t["ema_entry_side"] == 1,
     f"{t['exit_reason']} @ {t['exit_price']} · entry side {t['ema_entry_side']}")
 
-t = ema_exit(flat + [95.0, 96.0, 103.0], 1, 25, 95.0)
-chk("BUY entered BELOW the EMA20 (EMA above the price) exits when a candle closes above it",
-    t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 103.0) < 1e-9 and t["ema_entry_side"] == -1,
-    f"{t['exit_reason']} @ {t['exit_price']} · entry side {t['ema_entry_side']}")
-
 t = ema_exit(flat + [105.0, 106.0, 104.0, 103.0], 1, 25, 105.0)
-chk("no exit while the price stays on the entry side of the EMA20",
+chk("no exit while the price stays on the trade's own side of the EMA20",
     t["status"] == "OPEN", t.get("exit_reason"))
 
 t = ema_exit(flat + [103.0, 99.0], -1, 25, 103.0)
-chk("a SELL is never blocked by the EMA and exits on its first close across",
-    t["exit_reason"] == "EMA20", f"{t['exit_reason']} @ {t.get('exit_price')}")
+chk("a wrong-side SELL is not closed by its own cross down and keeps running",
+    t["status"] == "OPEN", t.get("exit_reason"))
 
 # ---------------------------------------------------------------- fixed-size lots (Delta: 1 lot = 0.001 BTC)
 DELTA_SRC = "Delta Exchange India (BTCUSD perp)"

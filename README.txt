@@ -56,16 +56,17 @@ Trading rules (all editable in Settings)
     take-profit: a position is held until the EMA20 exit, the opposite signal, the 23:00 IST
     close, a manual Stop, or the optional time exit (Max holding candles, default none).
     Fees default 0 (simulated setting).
-  * EMA20 protection (exit only). A 20-candle EMA on the trader's own interval. At entry the
-    trader records whether the price is above or below the EMA20 - that never blocks the trade,
-    the signal alone decides the entry. The trade then exits (reason EMA20) on the first candle
-    that CLOSES on the other side of the EMA20 than the entry side:
-      - SELL entered while price was above the EMA: exits when a candle closes below it.
-      - SELL entered while price was below the EMA (EMA above the price): exits when a candle
-        closes above it.
-      - BUY is the mirror: entered above the EMA it exits on a close below; entered below, on a
-        close above.
-    A touch alone is not enough - the candle has to close across the EMA.
+  * EMA20 trend exit (exit only). A 20-candle EMA on the trader's own interval. A SELL is held
+    while the price stays below the EMA20 and exits (reason EMA20) the first time a candle
+    CLOSES above it. A BUY is the mirror: held above the EMA20, exits on a candle close below it.
+    The crossing that goes with the trade - a SELL falling through the EMA, a BUY rising through
+    it - is the move the trader wants, so it never closes the trade; the trade keeps running as
+    the price carries on lower (for a SELL) or higher (for a BUY). What closes it is the price
+    turning back against the position and closing on the other side of the EMA20.
+    Where the EMA sits at entry never blocks a trade: the signal alone decides the entry. A trade
+    entered on the wrong side of the EMA (a SELL signalled above it, a BUY below it) is managed
+    once a candle has first closed on its own side, so the entry itself cannot close it.
+    A touch alone is never enough - the candle has to close across the EMA.
   * Start now = trade now. On startup, or when Start is pressed, the trader takes the newest
     signal if its own candle closed inside the trading window, however old it is, and it passes
     the rules (the day's cap included). It never replays older history, and a restart
