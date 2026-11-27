@@ -401,9 +401,13 @@ with tab_study:
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
                  else v.sort_values("event_time", ascending=False))
             _pick = events[events["signal_side"] != 0]
+            _pk = _pick.iloc[-1] if not _pick.empty else None
+            _tradeable = bool(_pk is not None and in_trade_window(_pk["event_close_time"]))
             if not _pick.empty:
                 _pt = _pick["event_time"].max()
-                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this",
+                _arrow = ("⬅ trader uses this" if _tradeable
+                          else "⬅ newest pattern — not tradeable (outside Tue–Thu 7–11pm IST)")
+                v["trader_pick"] = np.where(v["event_time"] == _pt, _arrow,
                                             np.where((v["event_time"] > _pt) & (v["signal_side"] == 0),
                                                      "⚠️ not a signal (no pattern)", ""))
             else:
@@ -418,9 +422,10 @@ with tab_study:
                     "favorable_excursion_pct", "adverse_excursion_pct"]
             view = v[cols].round(5)
             if not _pick.empty:
-                _pk = _pick.iloc[-1]
                 st.caption(
-                    f"**Signal the trader uses** (newest by candle close, not the top row): "
+                    f"**Newest pattern event — {'inside' if _tradeable else 'OUTSIDE'} the Tue–Thu 7–11pm IST "
+                    f"window**, so it {'can open a trade' if _tradeable else 'cannot open any trade'} "
+                    f"(newest by candle close, not the top row): "
                     f"{SIDE_LABEL.get(engine.side_from_origin(_pk['origin_direction'])) or 'no side'} — level "
                     f"{_pk['level_price']:,.2f}, origin {_pk['origin_direction']}, "
                     f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
