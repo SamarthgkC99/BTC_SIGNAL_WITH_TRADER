@@ -332,7 +332,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema20 trend exit v20 2026-11-28"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema20 trend exit v21 2026-11-28"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -478,6 +478,9 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
     cap = max_window_trades(s)
     if side == 0:
         reason = "the level has no origin direction (not Bullish or Bearish)"
+    elif ist_date(ev["event_time"]) != ist_date(latest_open):
+        reason = (f"the level is not from today: it fired on {ist_date(ev['event_time']):%a %d %b} and the trader "
+                  f"only trades today's levels, so yesterday's signal is never carried into today")
     elif not in_win and not allow_any_window:
         reason = "outside the Tue-Thu 19:00-23:00 IST trading window"
     elif s["window_lane"] != "RUNNING":
@@ -510,8 +513,8 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
 
 def _catch_up(state, s, closed, events, iv, source, quote, now=None):
     """Start now = trade now: on startup, or after pressing Start, take the newest signal whose
-    own candle closed inside the trading window - however old it is - unless it was already
-    traded. The two-per-day window cap still applies, and a trade opened while the window is
+    own candle is from today and closed inside the trading window, unless it was already
+    traded. A signal from an earlier day is never carried in. The two-per-day window cap still applies, and a trade opened while the window is
     shut has no 23:00 close waiting for it."""
     if s["window_lane"] != "RUNNING" or events is None or events.empty:
         return

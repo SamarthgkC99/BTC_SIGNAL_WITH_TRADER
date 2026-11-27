@@ -299,23 +299,25 @@ with tab_study:
         directional = events[events["signal_side"] != 0] if not events.empty else events
         now_utc = pd.Timestamp.now(tz="UTC")
         win_open = in_trade_window(now_utc)
-        if not directional.empty:
-            last = directional.iloc[-1]
-            ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / iv_td)
-            label = SIDE_LABEL.get(engine.side_from_origin(last["origin_direction"])) or "no origin"
-            when = last["event_time"].tz_convert(IST).strftime("%a %d %b %H:%M IST")
-            took = in_trade_window(last["event_close_time"])
-            what = {"Strong close above level (candidate)": "closed strongly above",
-                    "Strong close below level (candidate)": "closed strongly below",
-                    "Bullish rejection (candidate)": "bounced up from",
-                    "Bearish rejection (candidate)": "was rejected down from"}[last["pattern"]]
-            msg = (f"**Latest signal: {label}** — price {what} a **{last['origin_direction']}-origin** level at "
-                   f"{last['level_price']:,.2f} (level {int(last['level_id'])}). Candle {when} · {ago} candle(s) ago · "
-                   f"price {last['event_price']:,.2f} {quote_currency} · "
-                   f"{'inside' if took else 'outside'} the Tue–Thu 7–11pm IST window")
-            (st.success if ago <= 3 else st.info)(msg)
+        ema_study = (float(dfi["ema20"].iloc[-1])
+                     if ("ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
+        price_now = float(closed["close"].iloc[-1])
+        today_pick, today_why = engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date(),
+                                                        price_now, ema_study)
+        if today_pick is None:
+            st.info(f"**No level to trade today:** {today_why}. Only today's levels are traded, so a signal from an "
+                    f"earlier day is history — it is never carried into today.")
         else:
-            st.info("No directional signal in the loaded sample yet.")
+            t_side = SIDE_LABEL.get(engine.side_from_origin(today_pick["origin_direction"])) or "no side"
+            t_when = pd.Timestamp(today_pick["event_time"]).tz_convert(IST).strftime("%a %d %b %H:%M IST")
+            t_pattern = str(today_pick["pattern"]).replace(" (candidate)", "")
+            st.success(
+                f"**Today's signal: {t_side}** — today's newest {today_pick['origin_direction']}-origin level at "
+                f"{today_pick['level_price']:,.2f} (level {int(today_pick['level_id'])}), {t_pattern.lower()} on "
+                f"{t_when}. Price {price_now:,.2f} {quote_currency} is "
+                f"{'above' if price_now > ema_study else 'below'} the EMA20 {ema_study:,.2f}, and only a "
+                f"{'BUY' if price_now > ema_study else 'SELL'} fits that side, so {t_side} is what the trader takes · "
+                f"{'window OPEN' if win_open else 'window closed right now'}")
         st.caption(f"Trade window right now: {'OPEN' if win_open else 'closed'} · signals are shown at any day/time; "
                    "signals inside the window go to the Window lane, all other times to the Test lane (Live P&L tab).")
 
@@ -400,14 +402,11 @@ with tab_study:
                              horizontal=True)
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
                  else v.sort_values("event_time", ascending=False))
-            _pick = events[events["signal_side"] != 0]
-            _pk = _pick.iloc[-1] if not _pick.empty else None
-            _tradeable = bool(_pk is not None and in_trade_window(_pk["event_close_time"]))
-            if not _pick.empty:
-                _pt = _pick["event_time"].max()
-                _arrow = ("⬅ trader uses this" if _tradeable
-                          else "⬅ newest pattern — not tradeable (outside Tue–Thu 7–11pm IST)")
-                v["trader_pick"] = np.where(v["event_time"] == _pt, _arrow,
+            _pk, _pk_why = engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date(),
+                                                   float(closed["close"].iloc[-1]), ema_study)
+            if _pk is not None:
+                _pt = _pk["event_time"]
+                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this (today's level)",
                                             np.where((v["event_time"] > _pt) & (v["signal_side"] == 0),
                                                      "⚠️ not a signal (no pattern)", ""))
             else:
@@ -421,11 +420,12 @@ with tab_study:
                     "trade", "in_trade_window", "signal_side", "fwd_return_dir_pct",
                     "favorable_excursion_pct", "adverse_excursion_pct"]
             view = v[cols].round(5)
-            if not _pick.empty:
+            if _pk is None:
+                st.caption(f"**No level to trade today:** {_pk_why}. Only today's levels are traded, so every row "
+                           f"from an earlier day is history.")
+            else:
                 st.caption(
-                    f"**Newest pattern event — {'inside' if _tradeable else 'OUTSIDE'} the Tue–Thu 7–11pm IST "
-                    f"window**, so it {'can open a trade' if _tradeable else 'cannot open any trade'} "
-                    f"(newest by candle close, not the top row): "
+                    f"**Level the trader uses** (today's newest level on the EMA20's side, not the top row): "
                     f"{SIDE_LABEL.get(engine.side_from_origin(_pk['origin_direction'])) or 'no side'} — level "
                     f"{_pk['level_price']:,.2f}, origin {_pk['origin_direction']}, "
                     f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
@@ -434,9 +434,10 @@ with tab_study:
                     f"clicked can show an older row at the top. A **newer level above it is not a signal**: a touch "
                     f"with no strong close or rejection is marked '⚠️ not a signal (no pattern)', its trade column "
                     f"is empty, and it cannot open a trade - the side and the entry only exist once a pattern fires. "
-                    f"It is {engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td)} candle(s) old. There is no "
-                    f"freshness rule any more: if its candle closed inside a trading window it is traded, however "
-                    f"old it is, up to {engine.max_window_trades(S)} automatic window trades per IST day.")
+                    f"It is {engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td)} candle(s) old. Only "
+                    f"TODAY's levels are traded (window trades and Force alike), up to "
+                    f"{engine.max_window_trades(S)} automatic window trades per IST day; a row from an earlier day "
+                    f"never opens anything.")
             show_df(view)
             st.download_button("Download event-study CSV (IST)", data=view.to_csv(index=False).encode("utf-8"),
                                file_name="btc_momentum_level_events_ist.csv", mime="text/csv")
@@ -682,6 +683,10 @@ with tab_pnl:
                 ("Trade side (from the level origin)", engine.side_from_origin(ls["origin_direction"]) != 0,
                  f"level origin {ls['origin_direction']} -> trade {SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'}"
                  f" · the pattern ({ls['pattern'].replace(' (candidate)', '')}) only triggers it, it never sets the side"),
+                ("Level is from today (IST)",
+                 engine.ist_date(ls["event_time"]) == pd.Timestamp.now(tz=IST).date(),
+                 f"signal day {engine.ist_date(ls['event_time'])} · today {pd.Timestamp.now(tz=IST).date()} · "
+                 f"levels from earlier days are never traded"),
                 ("Data currency", engine.usd_ok(S, quote_currency), f"data is {quote_currency}"),
             ]
             for name, passed, detail in checks:

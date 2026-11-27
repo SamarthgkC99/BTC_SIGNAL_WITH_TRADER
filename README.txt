@@ -25,11 +25,12 @@ Trading rules (all editable in Settings)
     all, the trade is skipped - the pattern's own side is never used as a fallback, so a signal
     can never sneak in as a BUY on a bearish setup. The event study shows the side the origin
     gives each row in its trade_side_by_origin column.
-  * No freshness rule and no repeat-direction rule. However old the newest signal is, if its
-    own candle closed inside a trading window the trader acts on it; a restart cannot trade the
-    same signal twice. A same-direction signal after the previous trade closed is a normal new
-    trade. While a position of that direction is still open it is simply kept (one position at
-    a time).
+  * Today's levels only. The trader enters only on a level from the current IST day, in the
+    window and in the Force button alike. A restart, a catch-up or a carry-in can no longer
+    carry yesterday's signal into today: rows from earlier days are history. A restart still
+    cannot trade the same signal twice, a same-direction signal after the previous trade closed
+    is a normal new trade, and while a position of that direction is still open it is simply
+    kept (one position at a time).
   * The EMA20 decides which side the Force button may enter. Force only uses TODAY's levels: it
     takes today's newest level whose origin side fits the EMA20 (a BUY above it, a SELL below
     it), so a level from an earlier day is never carried into today. Automatic window trades are
