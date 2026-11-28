@@ -48,9 +48,23 @@ Trading rules (all editable in Settings)
     and a qualifying pattern lands inside it on barely one evening in three, so at the window's
     first cycle the trader also takes that IST day's newest signal even if its candle closed
     before 19:00 (e.g. 14:15). It enters at the current price, keeps the 23:00 IST close, counts
-    toward the day's cap, and happens at most once a day - only when no automatic trade has
-    been made that day yet. Untick it to trade only signals whose own candle closed inside the
+        toward the day's cap, and happens at most once a day - only when no automatic trade has been
+    made that day yet. Untick it to trade only signals whose own candle closed inside the
     window.
+  * Force trading hours (Live P&L tab). Start a 30 min / 1 hour / 2 hour / 4 hour session and the
+    clock stops mattering: for as long as it runs the trader takes TODAY's signals automatically,
+    exactly as it does inside the window, with NO limit on how many. On Start it also takes
+    today's newest signal straight away at the live price, so the session begins with a trade
+    instead of waiting for the next one. Only the hours change: today's levels, a defined
+    pattern, the origin side, one position at a time, your settings filters and the EMA20 exit
+    all work exactly as usual, and Window trading must be RUNNING (Stop also ends the session).
+    When the session ends, any position it opened is closed at the market (exit reason
+    FORCE_END); those trades are tagged trigger 'force-hours', never count toward the window's
+    daily cap, and keep the app awake so the trader can manage them. Inside the real Tue-Thu
+    window the normal rules win (daily cap + the 23:00 close). The end time is saved, so a
+    restart can neither extend nor cancel a session, and a forgotten session switches itself off
+    when its end time passes. A checkbox in Settings ('Allow the Force trading hours buttons')
+    can hide the buttons.
   * Flip on the opposite signal. An opposite signal closes the open position at that signal's
     price, win or lose (exit reason REVERSED), and immediately opens the other side. The Force
     button flips the same way, so you never have to close the old trade by hand first. A trade
@@ -99,6 +113,11 @@ Trader controls (Live P&L tab)
   pings only Tue-Thu ~18:30-23:30 IST uses roughly 65 instance hours a month instead of ~744.
 
 Force trade now (the unlimited test lane)
+  Below it, 'Force trading hours' turns the click into a session: Start 30 min / 1 hour / 2 hours /
+  4 hours (buttons to extend by 30 min or an hour, and 'End force hours now'), and for as long as
+  the session runs the trader takes today's signals by itself, with no limit, then closes any
+  position still open at the market when the session ends. That is the way to let it trade
+  outside Tue-Thu 19:00-23:00 IST without pressing Force for every trade.
   A manual test entry, so YOU are the consent for the one thing a human click should decide:
   the trading hours. It places ONE trade instantly at the live price following TODAY's newest
   SIGNAL (a strong close or a rejection), whichever side its origin gives - a Bullish-origin

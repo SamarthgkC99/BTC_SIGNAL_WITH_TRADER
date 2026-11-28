@@ -37,6 +37,12 @@ Rules
     only, so it may trade outside the window (and such a trade has no 23:00 close). Every other
     rule still applies: lane RUNNING, origin direction, level-invalidated, data currency and the
     one-position-at-a-time rule. It is not counted in the two-per-day window cap.
+  * Force trading hours (Live P&L tab). Start a session and the clock stops mattering: while it
+    runs, today's signals are taken automatically, exactly as if the window were open, with no
+    limit on how many. When the session ends, any position it opened is closed at the market
+    (reason FORCE_END). Only the hours change: today's levels, a defined pattern, the origin side,
+    one position at a time and the EMA20 exit all stay exactly as they are, and the window lane
+    must be RUNNING. Inside the real Tue-Thu window the normal rules win (cap and 23:00 close).
   * The window lane is RUNNING / PAUSED / STOPPED. PAUSED = no new entries, open trades
     keep running. STOPPED = no new entries and open trades are closed at the latest price.
 Candles are processed in order, so a late or restarted worker never double-trades.
@@ -62,6 +68,9 @@ DEFAULT_SETTINGS = dict(
     rules_mode="Improved (fixes)",
     max_window_trades=4,              # automatic window entries per IST day; Force/test is unlimited
     carry_in_signal=True,             # at the window's first cycle, use that day's newest signal
+    force_hours_enabled=True,         # the Force trading hours buttons (Live P&L tab)
+    force_session_start=None,         # ISO UTC: when the running Force trading hours session started
+    force_session_end=None,           # ISO UTC: when it ends, its open trades are closed at the market
 )
 
 
@@ -105,6 +114,25 @@ def close_trade(t, price, reason, exit_time_iso, bars_held=None, seen=None):
     if seen is not None and len(seen):
         t["future_high_excursion_pct"] = (float(seen["high"].max()) / t["entry_price"] - 1) * 100
         t["future_low_excursion_pct"] = (float(seen["low"].min()) / t["entry_price"] - 1) * 100
+
+
+def close_force_trades(state, price, exit_time_iso, reason="FORCE_END", opened_before=None):
+    """Close Force trading hours positions at the market once their session is over.
+
+    `opened_before` spares a trade the page placed while this cycle was already reading the
+    older settings: it was opened after the cycle started, so the session it belongs to is not
+    the one the cycle saw.
+    """
+    n = 0
+    for t in state.get("trades", []):
+        if t["status"] != "OPEN" or t.get("trigger") != "force-hours":
+            continue
+        if (opened_before is not None and t.get("entry_time")
+                and pd.Timestamp(t["entry_time"]) >= pd.Timestamp(opened_before)):
+            continue
+        close_trade(t, price, reason, exit_time_iso)
+        n += 1
+    return n
 
 
 def close_lane_trades(state, lane, price, exit_time_iso, reason="STOPPED"):
@@ -181,7 +209,9 @@ def _process_exits(state, closed, iv):
         armed = bool(entry_side) and entry_side * side_num > 0
         for k, row in enumerate(after.itertuples(index=False), start=1):
             if wend is not None and row.open_time + iv >= wend:
-                price, reason = float(row.close), "WINDOW_END"
+                # A Force trading hours trade is closed at the market when its session ends.
+                price = float(row.close)
+                reason = "FORCE_END" if t.get("trigger") == "force-hours" else "WINDOW_END"
             elif h > 0 and k >= h:
                 price, reason = float(row.close), "TIME"
             else:
@@ -191,6 +221,35 @@ def _process_exits(state, closed, iv):
                 price, reason = float(row.close), "EMA20"     # a candle closed against the trade's side
             close_trade(t, price, reason, (row.open_time + iv).isoformat(), k, after.iloc[:k])
             break
+
+
+def force_session_end(s, ts_utc=None):
+    """The end time of the running Force trading hours session, or None when there is none.
+
+    A session is a temporary trading window: while it runs the trader takes today's signals
+    automatically, outside Tue-Thu 19:00-23:00 IST too. It is off when the switch is off, when
+    no session was started, or once its end time has passed - so a forgotten session can never
+    trade on its own.
+    """
+    if not s.get("force_hours_enabled", True):
+        return None
+    start, end = s.get("force_session_start"), s.get("force_session_end")
+    if not start or not end:
+        return None
+    ts = pd.Timestamp(ts_utc if ts_utc is not None else pd.Timestamp.now(tz="UTC"))
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    for t in (start, end):
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+    start, end = start.tz_convert("UTC"), end.tz_convert("UTC")
+    return end if start <= ts < end else None
+
+
+def in_force_hours(s, ts_utc=None):
+    """True while a Force trading hours session is running."""
+    return force_session_end(s, ts_utc) is not None
 
 
 def _near_window(now_utc, margin_min=30):
@@ -206,6 +265,8 @@ def needs_awake(s, state, now_utc=None):
         return "open trades are being managed"
     if s["window_lane"] == "PAUSED":
         return "trading is paused (stays awake so Start is instant)"
+    if force_session_end(s, now_utc):
+        return "force trading hours are running"
     if s["window_lane"] == "RUNNING":
         if not s["sleep_outside_window"] or _near_window(now_utc):
             return "window trading is running"
@@ -258,7 +319,8 @@ def auto_trades_on(state, day):
     """Automatic (worker/startup) window entries opened on that IST date. Forced trades do not count."""
     n = 0
     for t in state.get("trades", []):
-        if t.get("mode") != "WINDOW" or t.get("trigger") == "manual" or not t.get("entry_time"):
+        if (t.get("mode") != "WINDOW" or t.get("trigger") in ("manual", "force-hours")
+                or not t.get("entry_time")):
             continue
         if ist_date(t["entry_time"]) == day:
             n += 1
@@ -328,7 +390,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "patterns + origin side v24 2026-11-28"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "force trading hours v25 2026-11-28"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -456,12 +518,19 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
 
 
 def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_override=None, trigger="auto",
-              allow_any_window=False):
+              allow_any_window=False, force_end=None):
     # The level's origin direction is the trade direction (Bullish -> BUY, Bearish -> SELL).
     # The pattern only decides WHEN to trade; it never overrides the side.
     side = side_from_origin(ev["origin_direction"])
     close_ts = ev["event_time"] + iv
     in_win = in_trade_window(close_ts)
+    # A running Force trading hours session is the clock. Inside the real window the normal rules
+    # win, so a Tuesday evening keeps its daily cap and its 23:00 close.
+    forced = (not in_win) and force_end is not None
+    if in_win:
+        force_end = None
+    if forced:
+        trigger = "force-hours"
     level_iso = pd.Timestamp(ev["level_time"]).isoformat()
     sig = {
         "event_time": ev["event_time"].isoformat(), "pattern": ev["pattern"], "side": SIDE_LABEL.get(side, "none"),
@@ -480,11 +549,12 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
     elif ist_date(ev["event_time"]) != ist_date(latest_open):
         reason = (f"the level is not from today: it fired on {ist_date(ev['event_time']):%a %d %b} and the trader "
                   f"only trades today's levels, so yesterday's signal is never carried into today")
-    elif not in_win and not allow_any_window:
-        reason = "outside the Tue-Thu 19:00-23:00 IST trading window"
+    elif not in_win and not allow_any_window and not forced:
+        reason = ("outside the Tue-Thu 19:00-23:00 IST trading window (start Force trading hours to "
+                  "trade right now)")
     elif s["window_lane"] != "RUNNING":
         reason = f"trading is {s['window_lane'].lower()}"
-    elif used_today >= cap:
+    elif used_today >= cap and not forced:
         reason = (f"the day's {cap} automatic window trades are already used "
                   f"(a Force/test trade still works)")
     else:
@@ -500,6 +570,8 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
             level_iso, ev["level_price"], ev["event_time"].isoformat(), entry_iso,
             entry, source, "WINDOW", trigger, ema_entry=ema_at(closed, ref_open)))
         state["next_id"] += 1
+        if forced:                                    # the session's end closes it, not 23:00 IST
+            state["trades"][-1]["window_end"] = pd.Timestamp(force_end).isoformat()
         state["signal_state"] = {
             "last_traded_event": ev["event_time"].isoformat(),
             "last_entry_time": entry_iso, "last_level_time": level_iso,
@@ -507,6 +579,8 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
         sig["action"] = "TRADED" + (f" (flipped {flipped} opposite position)" if flipped else "")
         if allow_any_window and not in_win:
             sig["action"] += " (carried in from earlier the same day)"
+        if forced:
+            sig["action"] += " (force trading hours)"
     state["signals"].append(sig)
 
 
@@ -522,14 +596,17 @@ def _catch_up(state, s, closed, events, iv, source, quote, now=None):
         return
     ev = directional.iloc[-1]
     latest_open = closed["open_time"].iloc[-1]
-    if not in_trade_window(ev["event_time"] + iv):
+    force_end = force_session_end(s, latest_open)     # a Force trading hours session counts as the window
+    if not in_trade_window(ev["event_time"] + iv) and force_end is None:
         return
     if (state.get("signal_state") or {}).get("last_traded_event") == ev["event_time"].isoformat():
         return
     before = len(state["trades"])
     _consider(state, s, ev, latest_open, iv, source, quote, closed,
-              entry_override=float(closed["close"].iloc[-1]), trigger="startup")
-    if len(state["trades"]) > before and now is not None and not in_trade_window(now):
+              entry_override=float(closed["close"].iloc[-1]),
+              trigger="force-hours" if force_end is not None else "startup", force_end=force_end)
+    if (len(state["trades"]) > before and now is not None and not in_trade_window(now)
+            and force_end is None):
         state["trades"][-1]["window_end"] = None      # started late: nothing to close at 23:00
 
 
@@ -579,6 +656,11 @@ def process(state, s, closed, events, source, quote, now=None):
     for t in state["trades"]:                              # a STOPPED lane never keeps open trades
         if t["status"] == "OPEN" and s[f"{lane_of(t)}_lane"] == "STOPPED":
             close_trade(t, float(closed["close"].iloc[-1]), "STOPPED", (latest_open + iv).isoformat())
+    if not in_force_hours(s, now):                         # a finished session never keeps a position
+        ended = close_force_trades(state, float(closed["close"].iloc[-1]), (latest_open + iv).isoformat(),
+                                   opened_before=now)
+        if ended:
+            print(f"[trader] closed {ended} force trading hours position(s) at the market", flush=True)
     prev_lane = state.get("last_lane_state")
     state["last_lane_state"] = s["window_lane"]
     if state["last_candle_time"] is None:                 # first run: baseline history, then catch up
@@ -592,7 +674,8 @@ def process(state, s, closed, events, source, quote, now=None):
     if events is not None and not events.empty:
         new = events[(events["event_time"] > last_seen) & (events["signal_side"] != 0)]
         for _, ev in new.sort_values("event_time").iterrows():
-            _consider(state, s, ev, latest_open, iv, source, quote, closed)
+            _consider(state, s, ev, latest_open, iv, source, quote, closed,
+                      force_end=force_session_end(s, ev["event_time"] + iv))
     if prev_lane != "RUNNING" and s["window_lane"] == "RUNNING":    # Start pressed mid-window
         _catch_up(state, s, closed, events, iv, source, quote, now)
     if in_trade_window(now):                                         # the window's first cycle

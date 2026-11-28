@@ -483,7 +483,9 @@ with tab_pnl:
 
     def lane_set(lane, status):
         try:
-            set_settings(**{f"{lane}_lane": status})
+            set_settings(**{f"{lane}_lane": status},
+                         **({"force_session_start": None, "force_session_end": None}
+                            if status == "STOPPED" else {}))
             note = f"{lane.capitalize()} trading is now {status}."
             if status == "STOPPED":
                 n = close_lane_now(lane)
@@ -527,82 +529,173 @@ with tab_pnl:
     def _res(kind, text):
         st.session_state["test_result"] = (kind, text, pd.Timestamp.now(tz=IST).strftime("%H:%M:%S"))
 
-    if st.button("➕ Force trade now (test lane — unlimited, trades outside the window too)"):
+    def force_place(trigger="manual", session_end=None):
+        """Place today's newest signal at the live price. Returns (kind, message).
+
+        trigger "manual" = the Force button, "force-hours" = a Force trading hours session.
+        """
+        global state
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
-        last, why_pick = (engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date())
-                          if (data_ok and live_price is not None) else (None, None))
         if not data_ok or live_price is None:
-            _res("error", "No live data available right now.")
-        elif last is None:
-            _res("warning", f"Nothing placed — {why_pick}.")
-        else:
-            side = engine.side_from_origin(last["origin_direction"])
-            level_iso = last["level_time"].isoformat()
-            try:
-                fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
-                engine.adopt_legacy_lane(fresh)                             # old TEST-lane trades flip like any other
-                # Your click is the consent for the trading hours only. The origin direction, your
-                # settings filters and the one-position-at-a-time rule still apply.
-                why = engine.manual_entry_reason(fresh, S, last, side, closed["open_time"].iloc[-1],
-                                                 iv_td, quote_currency)
-                if why:
-                    hint = next((h for k, h in {
-                        "trading is": "Press ▶ Start to allow new trades, then Force again.",
-                        "a SELL is already open": "One position at a time: let the open trade exit on the EMA20, "
-                                                 "the opposite signal or Stop before forcing another one.",
-                        "a BUY is already open": "One position at a time: let the open trade exit on the EMA20, "
-                                                "the opposite signal or Stop before forcing another one.",
-                        "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
-                                                 "origin rule cannot pick a side. Wait for the next signal.",
-                        "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
-                        "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
-                        "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
-                        if why.startswith(k)), "")
-                    _res("warning", f"Not placed: blocked by your trader rule — {why}. {hint} "
-                                    "(Force overrides the trading hours only — your click is that consent — so the "
-                                    "origin direction, your settings filters and the one-position-at-a-time rule "
-                                    "still block it. It is never counted in the two-per-day window cap.)")
-                else:
-                    ema_ref = (float(dfi["ema20"].iloc[-1])
-                               if ("ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
-                    item = engine.build_trade(
-                        fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
-                        bool(last["level_invalidated"]), level_iso, last["level_price"],
-                        chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
-                        data_source, "WINDOW", "manual", ema_entry=ema_ref)
-                    if not in_win_now:                 # forced outside hours: there is no 11pm close to wait for
-                        item["window_end"] = None
-                    flipped = (engine.close_opposite(fresh, None, side, float(live_price), now_t.isoformat())
-                               if engine.is_single(S) else 0)
-                    fresh["next_id"] += 1
-                    fresh["signal_state"] = {"last_traded_event": last["event_time"].isoformat(),
-                                             "last_entry_time": now_t.isoformat(), "last_level_time": level_iso}
-                    fresh["trades"].append(item)
-                    fresh["signals"].append({
-                        "event_time": last["event_time"].isoformat(), "pattern": last["pattern"],
-                        "side": SIDE_LABEL[side], "price": float(live_price),
-                        "origin_direction": last["origin_direction"], "level_invalidated": bool(last["level_invalidated"]),
-                        "in_trade_window": bool(in_win_now), "source": data_source, "action": "TRADED (forced)"})
-                    STORE.write("state", fresh)
-                    read_key.clear()
-                    state = fresh
-                    ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
-                    _kind = last["pattern"].replace(" (candidate)", "") + " signal"
-                    _res("success", f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following today's "
-                               f"{_kind} from {ago} candle(s) ago — "
-                               f"level {last['level_price']:,.2f} (origin {last['origin_direction']})"
-                               f" = {SIDE_LABEL[side]}. Below is the level and origin the side came from."
-                               + (f" EMA20 {ema_ref:,.2f} is {'below' if live_price > ema_ref else 'above'} the entry; "
-                                  f"this {SIDE_LABEL[side]} exits only when a candle CLOSES "
-                                  f"{'above' if side < 0 else 'below'} the EMA20, so a move "
-                                  f"{'lower' if side < 0 else 'higher'} through it is held."
-                                  if ema_ref else "")
-                               + (f" It closed {flipped} opposite position(s) first." if flipped else "")
-                               + ("" if in_win_now else " Forced outside the trading hours; it has no 23:00 close "
-                                                       "and runs until the EMA20 exit, the opposite signal, Stop, or the time exit."))
-            except Exception as exc:                                        # noqa: BLE001
-                _res("error", f"Could not place the test trade: {type(exc).__name__}")
+            return "error", "No live data available right now."
+        last, why_pick = engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date())
+        if last is None:
+            return "warning", f"Nothing placed — {why_pick}."
+        side = engine.side_from_origin(last["origin_direction"])
+        level_iso = last["level_time"].isoformat()
+        try:
+            fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
+            engine.adopt_legacy_lane(fresh)                             # old TEST-lane trades flip like any other
+            # Your click is the consent for the trading hours only. The origin direction, your
+            # settings filters and the one-position-at-a-time rule still apply.
+            why = engine.manual_entry_reason(fresh, S, last, side, closed["open_time"].iloc[-1],
+                                             iv_td, quote_currency)
+            if why:
+                hint = next((h for k, h in {
+                    "trading is": "Press ▶ Start to allow new trades, then try again.",
+                    "a SELL is already open": "One position at a time: let the open trade exit on the EMA20, "
+                                             "the opposite signal or Stop before forcing another one.",
+                    "a BUY is already open": "One position at a time: let the open trade exit on the EMA20, "
+                                            "the opposite signal or Stop before forcing another one.",
+                    "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
+                                             "origin rule cannot pick a side. Wait for the next signal.",
+                    "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
+                    "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
+                    "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
+                    if why.startswith(k)), "")
+                return "warning", (f"Not placed: blocked by your trader rule — {why}. {hint} "
+                                   "(Force overrides the trading hours only — your click is that consent — so the "
+                                   "origin direction, your settings filters and the one-position-at-a-time rule "
+                                   "still block it. It is never counted in the two-per-day window cap.)")
+            ema_ref = (float(dfi["ema20"].iloc[-1])
+                       if ("ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
+            item = engine.build_trade(
+                fresh["next_id"], S, side, last["pattern"], last["origin_direction"],
+                bool(last["level_invalidated"]), level_iso, last["level_price"],
+                chart_df["open_time"].iloc[-1].isoformat(), now_t.isoformat(), live_price,
+                data_source, "WINDOW", trigger, ema_entry=ema_ref)
+            if session_end is not None:               # closes at the market when the session ends
+                item["window_end"] = pd.Timestamp(session_end).isoformat()
+            elif not in_win_now:                      # forced outside hours: there is no 11pm close to wait for
+                item["window_end"] = None
+            flipped = (engine.close_opposite(fresh, None, side, float(live_price), now_t.isoformat())
+                       if engine.is_single(S) else 0)
+            fresh["next_id"] += 1
+            fresh["signal_state"] = {"last_traded_event": last["event_time"].isoformat(),
+                                     "last_entry_time": now_t.isoformat(), "last_level_time": level_iso}
+            fresh["trades"].append(item)
+            fresh["signals"].append({
+                "event_time": last["event_time"].isoformat(), "pattern": last["pattern"],
+                "side": SIDE_LABEL[side], "price": float(live_price),
+                "origin_direction": last["origin_direction"], "level_invalidated": bool(last["level_invalidated"]),
+                "in_trade_window": bool(in_win_now), "source": data_source,
+                "action": "TRADED (forced)" + (" · force trading hours" if trigger == "force-hours" else "")})
+            STORE.write("state", fresh)
+            read_key.clear()
+            state = fresh
+            ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
+            _kind = last["pattern"].replace(" (candidate)", "") + " signal"
+            msg = (f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following today's "
+                   f"{_kind} from {ago} candle(s) ago — "
+                   f"level {last['level_price']:,.2f} (origin {last['origin_direction']})"
+                   f" = {SIDE_LABEL[side]}."
+                   + (f" EMA20 {ema_ref:,.2f} is {'below' if live_price > ema_ref else 'above'} the entry; "
+                      f"this {SIDE_LABEL[side]} exits only when a candle CLOSES "
+                      f"{'above' if side < 0 else 'below'} the EMA20, so a move "
+                      f"{'lower' if side < 0 else 'higher'} through it is held."
+                      if ema_ref else "")
+                   + (f" It closed {flipped} opposite position(s) first." if flipped else "")
+                   + (" The session's end closes it at the market." if session_end is not None else
+                      "" if in_win_now else
+                      " Forced outside the trading hours; it has no 23:00 close and runs until the EMA20 exit, "
+                      "the opposite signal, Stop, or the time exit."))
+            return "success", msg
+        except Exception as exc:                                        # noqa: BLE001
+            return "error", f"Could not place the test trade: {type(exc).__name__}"
+
+    if st.button("➕ Force trade now (test lane — unlimited, trades outside the window too)"):
+        _res(*force_place())
+
+    # ------------------------------------------------- force trading hours (a temporary window)
+    st.markdown("---")
+    st.subheader("⏱️ Force trading hours")
+    force_allowed = bool(S.get("force_hours_enabled", True))
+    force_note = st.session_state.pop("force_note", None)
+    if force_note:
+        st.success(force_note)
+    f_start = pd.Timestamp(S["force_session_start"]) if S.get("force_session_start") else None
+    f_end = engine.force_session_end(S, pd.Timestamp.now(tz="UTC"))
+    if not force_allowed:
+        st.info("Force trading hours are switched off. Tick **Allow the Force trading hours buttons** in"
+                " Settings to use them.")
+    elif f_end is not None:
+        f_used = len([t for t in state.get("trades", [])
+                      if t.get("trigger") == "force-hours" and t.get("entry_time")
+                      and engine.ist_date(t["entry_time"]) == pd.Timestamp.now(tz=IST).date()])
+        st.success(f"**FORCE HOURS ON** · started {f_start.tz_convert(IST).strftime('%H:%M')} IST · "
+                   f"ends {f_end.tz_convert(IST).strftime('%H:%M')} IST · {f_used} trade(s) this session "
+                   f"(no limit) · a position still open at the end is closed at the market.")
+    else:
+        st.caption("Off. Start a session and the trader takes today's signals automatically right now — outside "
+                   "Tue–Thu 19:00–23:00 IST too. Entries are unlimited, and a trade still open when the session "
+                   "ends is closed at the market. Today's levels, a defined pattern, the origin side, one position "
+                   "at a time and the EMA20 exit work exactly as usual.")
+
+    def start_force(minutes, extend=False):
+        now_s = pd.Timestamp.now(tz="UTC")
+        start = f_start if (extend and f_start is not None) else now_s
+        base = f_end if (extend and f_end is not None) else now_s
+        end = base + pd.Timedelta(minutes=int(minutes))
+        try:
+            set_settings(force_session_start=start.isoformat(), force_session_end=end.isoformat())
+        except Exception as exc:                                    # noqa: BLE001
+            st.error(f"Could not save: {type(exc).__name__}")
+            return
+        if extend:
+            st.session_state["force_note"] = f"Session extended to {end.tz_convert(IST).strftime('%H:%M')} IST."
+            st.rerun()
+        note_txt = f"Force hours started: until {end.tz_convert(IST).strftime('%H:%M')} IST."
+        if S["window_lane"] != "RUNNING":
+            note_txt += " Trading is not RUNNING, so nothing will be taken — press ▶ Start above first."
+        kind, text = force_place(trigger="force-hours", session_end=end)
+        st.session_state["force_note"] = f"{note_txt} {text}"
+        st.rerun()
+
+    def end_force():
+        global state
+        try:
+            set_settings(force_session_start=None, force_session_end=None)
+        except Exception as exc:                                    # noqa: BLE001
+            st.error(f"Could not save: {type(exc).__name__}")
+            return
+        note_txt = "Force trading hours ended."
+        price = live_price or state.get("last_price")
+        if price:
+            fresh = STORE.read("state") or engine.new_state(S)
+            n = engine.close_force_trades(fresh, float(price), pd.Timestamp.now(tz="UTC").isoformat())
+            if n:
+                STORE.write("state", fresh)
+                read_key.clear()
+                state = fresh
+            note_txt += f" Closed {n} open trade(s) at the market." if n else ""
+        st.session_state["force_note"] = note_txt
+        st.rerun()
+
+    if force_allowed:
+        q1, q2, q3, q4 = st.columns(4)
+        for _col, _mins, _label in ((q1, 30, "Start 30 min"), (q2, 60, "Start 1 hour"),
+                                    (q3, 120, "Start 2 hours"), (q4, 240, "Start 4 hours")):
+            if _col.button(_label, key=f"force_start_{_mins}", disabled=f_end is not None,
+                           type="primary" if _mins == 60 else "secondary"):
+                start_force(_mins)
+        x1, x2, x3 = st.columns(3)
+        if x1.button("＋30 min", key="force_ext_30", disabled=f_end is None):
+            start_force(30, extend=True)
+        if x2.button("＋1 hour", key="force_ext_60", disabled=f_end is None):
+            start_force(60, extend=True)
+        if x3.button("⏹ End force hours now", key="force_end", disabled=f_end is None):
+            end_force()
     res = st.session_state.get("test_result")
     if res:                                                    # stays visible across the 5-second auto-refresh
         {"success": st.success, "warning": st.warning, "error": st.error}[res[0]](f"{res[2]} IST · {res[1]}")
@@ -625,6 +718,13 @@ with tab_pnl:
         win_now = in_trade_window(now_u)
         rows.append(("Trading window right now", "✅" if win_now else "ℹ️",
                      f"{'inside' if win_now else 'outside'} Tue–Thu 19:00–23:00 IST · trading is {S['window_lane']}"))
+        f_end_now = engine.force_session_end(S, now_u)
+        rows.append(("Force trading hours", "✅" if f_end_now else "ℹ️",
+                     (f"ON, ends {f_end_now.tz_convert(IST).strftime('%H:%M')} IST — today's signals are taken "
+                      f"automatically with no limit, and any open position is closed at the market when it ends")
+                     if f_end_now else
+                     "off — the trader only takes signals inside Tue–Thu 19:00–23:00 IST (or when you press "
+                     "Force trade now)"))
         if data_ok and live_price and "ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1]):
             ema_live = float(dfi["ema20"].iloc[-1])
             rows.append(("EMA20 trend exit", "ℹ️",
@@ -833,6 +933,9 @@ with tab_set:
                                             1, 50, int(engine.max_window_trades(S)), 1)
         carry_in = st.checkbox("When the window opens, also use that day's newest signal from earlier",
                                value=bool(S.get("carry_in_signal", True)))
+        force_hours_enabled = st.checkbox("Allow the Force trading hours buttons (Live P&L tab) — unlimited "
+                                          "automatic entries while a session runs",
+                                          value=bool(S.get("force_hours_enabled", True)))
         st.caption("One position only: it flips on the opposite signal and closes at 11:00pm IST either way. "
                    "A qualifying pattern lands inside the 4-hour window on barely one evening in three, so the "
                    "carry-in uses the newest signal from earlier the same day at the window's first cycle "
@@ -856,6 +959,7 @@ with tab_set:
                        usd_inr=float(usd_inr_set),
                        fee_pct=fee_pct, max_hold_bars=int(max_hold_bars),
                        max_window_trades=int(max_window_trades), carry_in_signal=bool(carry_in),
+                       force_hours_enabled=bool(force_hours_enabled),
                        allowed_origins=allowed_origins,
                        skip_invalidated_events=skip_inv, allow_usd_fallback=allow_usd,
                        sleep_outside_window=sleep_outside)
