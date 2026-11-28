@@ -303,7 +303,7 @@ with tab_study:
                      if ("ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
         price_now = float(closed["close"].iloc[-1])
         today_pick, today_why = engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date(),
-                                                        price_now, ema_study)
+                                                        price_now, ema_study)   # today's newest only
         if today_pick is None:
             st.info(f"**No level to trade today:** {today_why}. Only today's levels are traded, so a signal from an "
                     f"earlier day is history — it is never carried into today.")
@@ -314,10 +314,10 @@ with tab_study:
             st.success(
                 f"**Today's signal: {t_side}** — today's newest {today_pick['origin_direction']}-origin level at "
                 f"{today_pick['level_price']:,.2f} (level {int(today_pick['level_id'])}), {t_pattern.lower()} on "
-                f"{t_when}. Price {price_now:,.2f} {quote_currency} is "
-                f"{'above' if price_now > ema_study else 'below'} the EMA20 {ema_study:,.2f}, and only a "
-                f"{'BUY' if price_now > ema_study else 'SELL'} fits that side, so {t_side} is what the trader takes · "
-                f"{'window OPEN' if win_open else 'window closed right now'}")
+                f"{t_when}. Its origin gives {t_side}, and that is what the trader takes - both BUY and SELL "
+                f"levels are followed, the EMA20 only closes a trade (price {price_now:,.2f} {quote_currency} is "
+                f"{'above' if ema_study is None or price_now > ema_study else 'below'} the EMA20 "
+                f"{ema_study:,.2f}) · {'window OPEN' if win_open else 'window closed right now'}")
         st.caption(f"Trade window right now: {'OPEN' if win_open else 'closed'} · signals are shown at any day/time; "
                    "signals inside the window go to the Window lane, all other times to the Test lane (Live P&L tab).")
 
@@ -526,16 +526,10 @@ with tab_pnl:
     if st.button("➕ Force trade now (test lane — unlimited, trades outside the window too)"):
         now_t = pd.Timestamp.now(tz="UTC")
         in_win_now = in_trade_window(now_t)
-        ema_pick = (float(dfi["ema20"].iloc[-1])
-                    if (data_ok and "ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
-        last, why_pick = (engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date(),
-                                                  float(live_price), ema_pick)
-                          if (data_ok and live_price is not None and ema_pick is not None) else (None, None))
+        last, why_pick = (engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date())
+                          if (data_ok and live_price is not None) else (None, None))
         if not data_ok or live_price is None:
             _res("error", "No live data available right now.")
-        elif ema_pick is None:
-            _res("warning", "The EMA20 is not ready yet, so the side that fits the market is unknown. "
-                             "Try again in a few candles.")
         elif last is None:
             _res("warning", f"Nothing placed — {why_pick}.")
         else:
@@ -555,9 +549,6 @@ with tab_pnl:
                                                  "the opposite signal or Stop before forcing another one.",
                         "a BUY is already open": "One position at a time: let the open trade exit on the EMA20, "
                                                 "the opposite signal or Stop before forcing another one.",
-                        "the EMA20 trend is against this signal": "A BUY is only taken above the EMA20 and a SELL "
-                                                                  "only below it. Wait for a level whose origin "
-                                                                  "matches the trend.",
                         "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
                                                  "origin rule cannot pick a side. Wait for the next signal.",
                         "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
@@ -653,9 +644,9 @@ with tab_pnl:
             used_today = engine.auto_trades_on(state, pd.Timestamp.now(tz=IST).date())
             rows.append(("Window trades today", "✅" if used_today < engine.max_window_trades(S) else "❌ BLOCKS",
                          f"{used_today} of {engine.max_window_trades(S)} automatic window trades used today (IST) · "
-                         f"Force/test trades are not counted and have no daily limit · no freshness rule: the newest "
-                         f"in-window signal is traded however old it is ({ago_c} candle(s) now); a signal whose "
-                         f"side is against the EMA20 is skipped every time"))
+                         f"Force/test trades are not counted and have no daily limit · today's levels only: the "
+                         f"newest signal from today is traded ({ago_c} candle(s) now) and a signal from an earlier "
+                         f"day never enters; both BUY and SELL are taken, the EMA20 only exits"))
             rows.append(("Latest directional signal", "ℹ️",
                          f"{SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'} · "
                          f"{ls['pattern'].replace(' (candidate)', '')} · "
@@ -668,9 +659,7 @@ with tab_pnl:
                          f"{_nl['level_price']:,.2f} · origin {_nl['origin_direction']} → "
                          f"{SIDE_LABEL.get(engine.side_from_origin(_nl['origin_direction'])) or 'none'} · created "
                          f"{pd.Timestamp(_nl['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')} · "
-                         f"{_nl['pattern']}" +
-                         (" — a level touch is not a signal until a strong close fires"
-                          if not _nl["pattern"].startswith("Strong close") else "")))
+                         f"{_nl['pattern']}"))
             checks = [
                 ("Origin filter", S["allowed_origins"] == "Both" or ls["origin_direction"] == S["allowed_origins"],
                  f"set to '{S['allowed_origins']}'"),

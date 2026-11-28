@@ -31,12 +31,11 @@ Trading rules (all editable in Settings)
     cannot trade the same signal twice, a same-direction signal after the previous trade closed
     is a normal new trade, and while a position of that direction is still open it is simply
     kept (one position at a time).
-  * The EMA20 decides which side the Force button may enter. Force only uses TODAY's levels: it
-    takes today's newest level whose origin side fits the EMA20 (a BUY above it, a SELL below
-    it), so a level from an earlier day is never carried into today. Automatic window trades are
-    NOT filtered this way: they still follow the newest signal described above, because a 60-day
-    backtest of this rule on automatic entries lost every winner (11 trades, 0 wins). The exit
-    is unchanged: the EMA20 still closes a position only on a candle CLOSE through it.
+  * Today's newest signal, both sides. The Force button takes TODAY's newest level, whatever
+    side its origin gives - a Bullish-origin level places a BUY and a Bearish-origin level places
+    a SELL, so a BUY is never refused just because the price sits below the EMA20. The EMA20 no
+    longer vetoes entries; it only closes them (a position exits when a candle CLOSES through
+    it). A level from an earlier day is never carried into today.
   * Automatic window trades per IST day: a Settings field (1-50, default 4). The worker's
     window entries are capped at that many per IST date, flips included. The Force button is the
     test lane: it is never counted and has no daily limit.

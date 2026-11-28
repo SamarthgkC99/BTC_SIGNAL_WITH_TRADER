@@ -276,32 +276,23 @@ def ema_side_ok(price, ema, side):
     return (float(price) > float(ema)) if side > 0 else (float(price) < float(ema))
 
 
-def pick_force_event(events, today_ist, price, ema):
-    """The event the Force button follows: today's newest level whose side fits where price sits
-    relative to the EMA20. Returns (event, why_not) - event is None when nothing fits.
+def pick_force_event(events, today_ist, price=None, ema=None):
+    """The event the Force button follows: today's newest level, whichever side its origin gives.
+    Returns (event, why_not) - event is None when there is nothing from today.
 
     Only today's rows are used: a signal from yesterday can no longer describe today's market.
-    A pattern is not required, because your click is the trigger; the side still comes from the
-    level's origin, so a Bearish level can only ever place a SELL. Above the EMA20 only BUY sides
-    fit, below it only SELL sides, so the bot never forces a BUY into a falling market.
+    Nothing else filters it - your click is the trigger, and both a BUY (Bullish-origin level) and
+    a SELL (Bearish-origin level) are taken, so a BUY is never refused because the price happens to
+    sit below the EMA20. The EMA20 still closes positions; it no longer vetoes entries. `price` and
+    `ema` are accepted for older callers and are not used.
     """
     if events is None or len(events) == 0:
         return None, "no levels or signals are loaded yet"
-    if ema is None or pd.isna(ema):
-        return None, "the EMA20 is not ready yet, so the side that fits the market is unknown"
     when = pd.to_datetime(events["event_time"], utc=True).dt.tz_convert(signals.IST).dt.date
     today = events[when == today_ist].sort_values("event_time", ascending=False)
     if today.empty:
         return None, "there is no level or signal from today yet"
-    want = 1 if float(price) > float(ema) else -1
-    for _, ev in today.iterrows():
-        if side_from_origin(ev["origin_direction"]) == want:
-            return ev, None
-    sides = sorted({str(o) for o in today["origin_direction"]})
-    return None, (f"every level from today is on the wrong side for this market: price {float(price):,.2f} is "
-                  f"{'above' if want > 0 else 'below'} the EMA20 {float(ema):,.2f}, which only allows "
-                  f"{'BUY (Bullish levels)' if want > 0 else 'SELL (Bearish levels)'}; today's origins are "
-                  f"{', '.join(sides)}. Wait for a level that matches the trend.")
+    return today.iloc[0], None
 
 
 def ema_at(closed, ts):
@@ -333,7 +324,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema20 trend exit v22 2026-11-28"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "ema20 trend exit v23 2026-11-28"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
