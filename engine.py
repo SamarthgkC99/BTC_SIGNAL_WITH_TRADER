@@ -173,8 +173,8 @@ def _ema_exit_signal(row, side_num, armed):
 
     A SELL exits when a candle CLOSES above the EMA20, a BUY when it closes below it. The other
     crossing (a SELL closing below, a BUY closing above) is the trade's own direction, so it is
-    held - it only arms the exit. A trade entered on the wrong side of the EMA therefore cannot
-    be closed out by the entry itself: it is managed after its first close on its own side.
+    held. Every trade starts armed, so the protector is active from the entry candle whichever
+    side of the EMA20 the entry happened to be on.
     """
     ema = getattr(row, "ema20", None)
     if ema is None or pd.isna(ema):
@@ -202,11 +202,11 @@ def _process_exits(state, closed, iv):
         after = closed[closed["open_time"] > entry_open]
         if h > 0:
             after = after.head(h)
-        entry_side, _ema = _entry_ema_side(t, closed, iv)
+        _entry_side, _ema = _entry_ema_side(t, closed, iv)   # stores the entry's EMA side for display
         side_num = int(t["side_num"])
-        # Armed = the trade already sits on its own side of the EMA (a SELL entered below it),
-        # so the first close against it is an exit. A wrong-side entry arms on its first own-side close.
-        armed = bool(entry_side) and entry_side * side_num > 0
+        # The protector is active from the entry candle: the first close against the trade ends it,
+        # whichever side of the EMA20 the entry was on (a wrong-side entry is cut at once too).
+        armed = True
         for k, row in enumerate(after.itertuples(index=False), start=1):
             if wend is not None and row.open_time + iv >= wend:
                 # A Force trading hours trade is closed at the market when its session ends.
@@ -285,10 +285,39 @@ ORIGIN_SIDE = {"Bullish": 1, "Bearish": -1}
 
 
 def side_from_origin(origin):
-    """The trade side IS the level's origin direction shown in the event study:
-    Bullish level -> BUY, Bearish level -> SELL. 0 means the level has no usable origin
-    direction, and then there is NO trade — the pattern side is never used as a fallback."""
+    """The level's own direction: Bullish level -> BUY, Bearish level -> SELL; 0 = no origin.
+
+    Since v26 this is the side for a REJECTION only: a strong close through the level trades the
+    pattern's own side instead (see side_from_pattern)."""
     return ORIGIN_SIDE.get(str(origin).strip().title(), 0) if origin is not None else 0
+
+
+def side_from_pattern(pattern, signal_side=0, origin=None):
+    """The v26 direction rule: the side a signal is traded on.
+
+    A STRONG CLOSE through the level is a continuation, so the trade follows the pattern's own
+    side: a close above the level is a BUY, a close below it a SELL - even when that goes against
+    the level's origin direction. A REJECTION off the level follows the level's origin direction
+    (Bullish -> BUY, Bearish -> SELL), because the rejection is the level holding.
+    0 means the signal has no trade direction, so there is no trade.
+    """
+    p = str(pattern or "").strip().lower()
+    n = int(signal_side or 0)
+    if p.startswith("strong close"):
+        return 1 if n > 0 else (-1 if n < 0 else 0)
+    if "rejection" in p:
+        return side_from_origin(origin)
+    return 0
+
+
+def needs_origin_side(pattern):
+    """True when this pattern has to be traded on its level's origin side (rejections only)."""
+    return "rejection" in str(pattern or "").strip().lower()
+
+
+def side_for_event(ev):
+    """The side the trader takes for a study row or an event dict (see side_from_pattern)."""
+    return side_from_pattern(ev.get("pattern"), ev.get("signal_side", 0), ev.get("origin_direction"))
 
 
 def signal_age(ev, latest_open, iv):
@@ -341,14 +370,14 @@ def ema_side_ok(price, ema, side):
 
 
 def pick_force_event(events, today_ist, price=None, ema=None):
-    """The event the Force button follows: today's newest SIGNAL, whichever side its origin gives.
+    """The event the Force button follows: today's newest SIGNAL, whichever side the rule gives.
     Returns (event, why_not) - event is None when today has no signal yet.
 
     Only today's rows are used: a signal from yesterday can no longer describe today's market.
-    Only a defined pattern is a signal, so a bare level touch can never be forced. Both a BUY
-    (Bullish-origin level) and a SELL (Bearish-origin level) are taken: the side comes from the
-    origin, never from the EMA20, which only closes positions. `price` and `ema` are accepted for
-    older callers and are not used.
+    Only a defined pattern is a signal, so a bare level touch can never be forced. A strong close
+    trades its pattern's side and a rejection its level's origin, so both a BUY and a SELL are
+    taken: the EMA20 never picks a side, it only closes positions. `price` and `ema` are accepted
+    for older callers and are not used.
     """
     if events is None or len(events) == 0:
         return None, "no levels or signals are loaded yet"
@@ -385,12 +414,12 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
     if s["window_lane"] != "RUNNING":
         return f"trading is {s['window_lane'].lower()}"
     if side == 0:
-        return "the level has no origin direction (not Bullish or Bearish)"
+        return "this signal has no trade direction, so no side can be traded"
     return block_reason(state, s, ev["origin_direction"], bool(ev["level_invalidated"]),
-                        pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
+                        pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window", pattern=ev.get("pattern"))
 
 
-RULES_BUILD = "force trading hours v25 2026-11-28"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "direction rule + EMA from entry v26 2026-11-28"   # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -436,17 +465,19 @@ def close_opposite(state, lane, side, price, exit_time_iso, closed=None, upto_op
 
 
 def close_counter_origin(state, price, exit_time_iso, closed=None):
-    """Close any open trade whose stored level origin points against its own side.
+    """Close any open REJECTION trade whose stored level origin points against its own side.
 
-    Such a trade can only come from a build that still allowed counter-origin entries (or a
-    forced entry from before the rule became absolute). The rule is now never bypassed, so
-    these positions are closed instead of left running.
+    A rejection must follow the level's origin (v26), so such a position can only come from an
+    older build or a forced entry from before the rule. A strong-close trade follows its
+    pattern's side and may legitimately sit against the origin, so it is left to the EMA20.
     """
     n = 0
     for t in state["trades"]:
         side = int(t.get("side_num") or 0)
         origin = t.get("origin_direction")
         if t["status"] != "OPEN" or not origin or not side:
+            continue
+        if not needs_origin_side(t.get("pattern")):
             continue
         if ORIGIN_SIDE.get(origin, side) == side:
             continue
@@ -459,19 +490,20 @@ def close_counter_origin(state, price, exit_time_iso, closed=None):
     return n
 
 
-def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window"):
+def block_reason(state, s, origin, invalidated, level_time_iso, quote, side=None, lane="window", pattern=None):
     """Trader rules, shared by automatic entries and by the Force-trade button.
 
-    The origin filter, the origin direction, the level-invalidated filter, the data-currency rule
+    The origin filter, the direction rule, the level-invalidated filter, the data-currency rule
     and one-position-at-a-time always apply. There is no signal-freshness rule and no
     repeat-direction rule: a same-direction signal with no position open is a normal trade again.
+    A rejection must be traded on its level's origin side; a strong close follows its pattern.
     """
     if side is not None and side == 0:
-        return "the level has no origin direction (not Bullish or Bearish), so no side can be traded"
+        return "this signal has no trade direction, so no side can be traded"
     if s["allowed_origins"] != "Both" and origin != s["allowed_origins"]:
         return f"origin filter ({s['allowed_origins']} only)"
-    if side is not None and ORIGIN_SIDE.get(origin, 0) != side:
-        return "against the level's origin direction"
+    if side is not None and needs_origin_side(pattern) and ORIGIN_SIDE.get(origin, 0) != side:
+        return "against the level's origin direction (a rejection must follow it)"
     if s["skip_invalidated_events"] and invalidated:
         return "level-invalidated filter"
     if side is not None and any(int(t["side_num"]) == side for t in open_trades(state)):
@@ -519,9 +551,9 @@ def build_trade(trade_id, s, side, pattern, origin, invalidated, level_time_iso,
 
 def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_override=None, trigger="auto",
               allow_any_window=False, force_end=None):
-    # The level's origin direction is the trade direction (Bullish -> BUY, Bearish -> SELL).
-    # The pattern only decides WHEN to trade; it never overrides the side.
-    side = side_from_origin(ev["origin_direction"])
+    # v26 direction rule: a strong close trades the pattern's own side (continuation), a rejection
+    # follows the level's origin. The EMA20 still never picks a side, it only closes the trade.
+    side = side_from_pattern(ev.get("pattern"), ev.get("signal_side", 0), ev["origin_direction"])
     close_ts = ev["event_time"] + iv
     in_win = in_trade_window(close_ts)
     # A running Force trading hours session is the clock. Inside the real window the normal rules
@@ -542,7 +574,7 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
     used_today = auto_trades_on(state, ist_date(entry_iso))
     cap = max_window_trades(s)
     if side == 0:
-        reason = "the level has no origin direction (not Bullish or Bearish)"
+        reason = "this signal has no trade direction (not a strong close or a rejection with a level origin)"
     elif int(ev.get("signal_side", 1) or 0) == 0:
         reason = ("a bare level touch is not a signal: only a strong close through the level or a "
                   "rejection off it opens a trade")
@@ -558,7 +590,8 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
         reason = (f"the day's {cap} automatic window trades are already used "
                   f"(a Force/test trade still works)")
     else:
-        reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote, side)
+        reason = block_reason(state, s, ev["origin_direction"], ev["level_invalidated"], level_iso, quote, side,
+                              pattern=ev.get("pattern"))
     if reason:
         sig["action"] = "SKIPPED: " + reason
     else:
@@ -651,8 +684,8 @@ def process(state, s, closed, events, source, quote, now=None):
         print(f"[trader] adopted {adopted} trade(s) from the removed test lane", flush=True)
     _process_exits(state, closed, iv)
     fixed = close_counter_origin(state, float(closed["close"].iloc[-1]), (latest_open + iv).isoformat(), closed)
-    if fixed:                                             # never leave a counter-origin position running
-        print(f"[trader] closed {fixed} position(s) pointing against their level's origin", flush=True)
+    if fixed:                                             # never leave a counter-origin rejection running
+        print(f"[trader] closed {fixed} rejection(s) pointing against their level's origin", flush=True)
     for t in state["trades"]:                              # a STOPPED lane never keeps open trades
         if t["status"] == "OPEN" and s[f"{lane_of(t)}_lane"] == "STOPPED":
             close_trade(t, float(closed["close"].iloc[-1]), "STOPPED", (latest_open + iv).isoformat())

@@ -308,13 +308,16 @@ with tab_study:
             st.info(f"**No signal to trade today:** {today_why}. Only today's levels are traded, so a signal from "
                     f"an earlier day is history — it is never carried into today.")
         else:
-            t_side = SIDE_LABEL.get(engine.side_from_origin(today_pick["origin_direction"])) or "no side"
+            t_side = SIDE_LABEL.get(engine.side_for_event(today_pick)) or "no side"
             t_when = pd.Timestamp(today_pick["event_time"]).tz_convert(IST).strftime("%a %d %b %H:%M IST")
             t_pattern = str(today_pick["pattern"]).replace(" (candidate)", "")
+            t_rule = (f"a rejection follows the level's origin ({today_pick['origin_direction']})"
+                      if engine.needs_origin_side(today_pick["pattern"])
+                      else "a strong close trades the pattern's own direction")
             st.success(
                 f"**Today's signal: {t_side}** — today's newest {today_pick['origin_direction']}-origin level at "
                 f"{today_pick['level_price']:,.2f} (level {int(today_pick['level_id'])}), {t_pattern.lower()} on "
-                f"{t_when}. Its origin gives {t_side} and that is what the trader takes; the EMA20 never picks a "
+                f"{t_when}. The direction rule gives {t_side}, because {t_rule}; the EMA20 never picks a "
                 f"side, it only closes the trade (price {price_now:,.2f} {quote_currency} is "
                 f"{'above' if ema_study is None or price_now > ema_study else 'below'} the EMA20 "
                 f"{'(not loaded)' if ema_study is None else format(ema_study, ',.2f')}) · "
@@ -383,7 +386,7 @@ with tab_study:
 - **Rejection:** wick/body ratio, candle direction and close location meet the thresholds.
 {RULE_LINES}
 - **Direction-adjusted columns:** `fwd_return_dir_pct`, `favorable_excursion_pct`, `adverse_excursion_pct` flip the sign for SELL signals. The raw `future_*` columns are kept as-is.
-- **`origin_direction` vs `signal`:** `origin_direction` is the direction of the candle that created the level. `signal` (BUY/SELL) comes from the pattern: a breakout always goes against its level's origin, so a SELL after a break below a Bullish-origin level is expected. The trader takes the side from `origin_direction`, never from the pattern: a Bearish-origin level is always traded as a SELL and a Bullish-origin level always as a BUY, and the pattern only decides when that trade happens.
+- **`origin_direction` vs `signal`:** `origin_direction` is the direction of the candle that created the level. `signal` (BUY/SELL) is the pattern's own side: a breakout always goes against its level's origin, so a SELL after a break below a Bullish-origin level is expected. **Direction rule (v26):** a strong close through the level is a continuation and is traded on the pattern's own side (close above → BUY, close below → SELL), even against the level's origin; a rejection off the level is traded on the level's origin direction (Bullish → BUY, Bearish → SELL), because the rejection is the level holding.
 - **`trade` column:** BUY/SELL if the signal falls inside Tue–Thu 7–11pm IST, otherwise "signal only". `future_*` columns are measured after the signal, so they are analysis only, never an entry condition.
 """.replace("{RULE_LINES}", LEGACY_LINES if legacy else IMPROVED_LINES))
 
@@ -393,12 +396,13 @@ with tab_study:
         else:
             v = events.copy()
             v["in_trade_window"] = v["event_close_time"].apply(in_trade_window)
-            v["trade_side_by_origin"] = v["origin_direction"].map(
-                lambda o: SIDE_LABEL.get(engine.side_from_origin(o)) or "none")
-            # `trade` is the side the trader would really take (the origin side), and only on a row
-            # that is a defined signal: a level touch with no pattern is never a trade.
+            # `trade_side` is the side the trader would really take under the v26 direction rule.
+            v["trade_side"] = v.apply(
+                lambda r: SIDE_LABEL.get(engine.side_for_event(r)) or "none", axis=1)
+            # `trade` shows it only on a row that is a defined signal and inside the window: a level
+            # touch with no pattern is never a trade.
             v["trade"] = np.where(v["signal_side"] == 0, "",
-                                  np.where(v["in_trade_window"], v["trade_side_by_origin"], "signal only"))
+                                  np.where(v["in_trade_window"], v["trade_side"], "signal only"))
             order = st.radio("Order", ["By level, then time (as in the first version)", "Newest first"],
                              horizontal=True)
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
@@ -414,7 +418,7 @@ with tab_study:
                 v["trader_pick"] = ""
             v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
             v["event_time"] = v["event_time"].dt.tz_convert(IST).astype(str)
-            cols = ["trader_pick", "level_id", "level_time", "level_price", "origin_direction", "trade_side_by_origin",
+            cols = ["trader_pick", "level_id", "level_time", "level_price", "origin_direction", "trade_side",
                     "event_time", "event_price",
                     "pattern", "signal", "forward_close_change_pct", "future_high_excursion_pct",
                     "future_low_excursion_pct", "level_invalidated",
@@ -427,7 +431,7 @@ with tab_study:
             else:
                 st.caption(
                     f"**Level the trader uses** (today's newest SIGNAL, not the top row): "
-                    f"{SIDE_LABEL.get(engine.side_from_origin(_pk['origin_direction'])) or 'no side'} — level "
+                    f"{SIDE_LABEL.get(engine.side_for_event(_pk)) or 'no side'} — level "
                     f"{_pk['level_price']:,.2f}, origin {_pk['origin_direction']}, "
                     f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
                     f"level created {pd.Timestamp(_pk['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}. "
@@ -542,12 +546,12 @@ with tab_pnl:
         last, why_pick = engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date())
         if last is None:
             return "warning", f"Nothing placed — {why_pick}."
-        side = engine.side_from_origin(last["origin_direction"])
+        side = engine.side_for_event(last)
         level_iso = last["level_time"].isoformat()
         try:
             fresh = STORE.read("state") or engine.new_state(S)          # uncached: latest account state
             engine.adopt_legacy_lane(fresh)                             # old TEST-lane trades flip like any other
-            # Your click is the consent for the trading hours only. The origin direction, your
+            # Your click is the consent for the trading hours only. The direction rule, your
             # settings filters and the one-position-at-a-time rule still apply.
             why = engine.manual_entry_reason(fresh, S, last, side, closed["open_time"].iloc[-1],
                                              iv_td, quote_currency)
@@ -558,15 +562,15 @@ with tab_pnl:
                                              "the opposite signal or Stop before forcing another one.",
                     "a BUY is already open": "One position at a time: let the open trade exit on the EMA20, "
                                             "the opposite signal or Stop before forcing another one.",
-                    "the level has no origin": "The newest signal's level has no Bullish/Bearish origin, so the "
-                                             "origin rule cannot pick a side. Wait for the next signal.",
+                    "no trade direction": "The newest signal has no usable trade direction, so no side can be "
+                                          "picked. Wait for the next signal.",
                     "level-invalidated": "Untick 'Skip events that invalidate their level' in Settings and save.",
                     "origin filter": "Set 'Only trade levels with origin direction' to Both in Settings.",
                     "USD fallback": "Tick 'Allow trading on USD fallback data' in Settings, or pick a USDT provider."}.items()
                     if why.startswith(k)), "")
                 return "warning", (f"Not placed: blocked by your trader rule — {why}. {hint} "
                                    "(Force overrides the trading hours only — your click is that consent — so the "
-                                   "origin direction, your settings filters and the one-position-at-a-time rule "
+                                   "direction rule, your settings filters and the one-position-at-a-time rule "
                                    "still block it. It is never counted in the two-per-day window cap.)")
             ema_ref = (float(dfi["ema20"].iloc[-1])
                        if ("ema20" in dfi and pd.notna(dfi["ema20"].iloc[-1])) else None)
@@ -639,7 +643,7 @@ with tab_pnl:
     else:
         st.caption("Off. Start a session and the trader takes today's signals automatically right now — outside "
                    "Tue–Thu 19:00–23:00 IST too. Entries are unlimited, and a trade still open when the session "
-                   "ends is closed at the market. Today's levels, a defined pattern, the origin side, one position "
+                   "ends is closed at the market. Today's levels, a defined pattern, the direction rule, one position "
                    "at a time and the EMA20 exit work exactly as usual.")
 
     def start_force(minutes, extend=False):
@@ -731,9 +735,10 @@ with tab_pnl:
                          f"EMA20 {ema_live:,.2f} · price {live_price:,.2f} is "
                          f"{'above' if live_price > ema_live else 'below'} it · a SELL exits only when a candle CLOSES "
                          f"above the EMA20 and a BUY only on a close below it · the crossing that goes with the trade "
-                         f"(a SELL falling through) is held · the EMA never blocks an entry"))
+                         f"(a SELL falling through) is held · the protector is active from the entry candle, so a "
+                         f"wrong-side entry is cut on its first close against it · the EMA never blocks an entry"))
         rows.append(("Rules build running", "ℹ️", engine.RULES_BUILD +
-                     " · a BUY can never follow a bearish-origin level"))
+                     " · a strong close trades its pattern's side, a rejection its level's origin"))
         rows.append(("Rules the TRADER uses", "ℹ️", f"{S['rules_mode']} · cooldown {S['cooldown_bars']} · provider {S['provider']} · "
                      f"lot ${S['lot_usd']:,.0f}"))
         rows.append(("Rules THIS PAGE uses", "✅" if rules_mode == S["rules_mode"] else "⚠️",
@@ -752,7 +757,7 @@ with tab_pnl:
                          f"newest signal from today is traded ({ago_c} candle(s) now) and a signal from an earlier "
                          f"day never enters; both BUY and SELL are taken, the EMA20 only exits"))
             rows.append(("Latest directional signal", "ℹ️",
-                         f"{SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'} · "
+                         f"{SIDE_LABEL.get(engine.side_for_event(ls)) or 'none'} · "
                          f"{ls['pattern'].replace(' (candidate)', '')} · "
                          f"{ls['event_time'].tz_convert(IST).strftime('%a %d %b %H:%M IST')} · {ago_c} candle(s) ago · "
                          f"origin {ls['origin_direction']} · level {ls['level_price']:,.2f} "
@@ -761,7 +766,7 @@ with tab_pnl:
             _nl = events.sort_values("level_time").iloc[-1]
             rows.append(("Newest level (study list top)", "ℹ️",
                          f"{_nl['level_price']:,.2f} · origin {_nl['origin_direction']} → "
-                         f"{SIDE_LABEL.get(engine.side_from_origin(_nl['origin_direction'])) or 'none'} · created "
+                         f"{SIDE_LABEL.get(engine.side_for_event(_nl)) or 'none'} · created "
                          f"{pd.Timestamp(_nl['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')} · "
                          f"{_nl['pattern']}"))
             checks = [
@@ -769,9 +774,10 @@ with tab_pnl:
                  f"set to '{S['allowed_origins']}'"),
                 ("'Skip events that invalidate their level'", not (S["skip_invalidated_events"] and bool(ls["level_invalidated"])),
                  f"{'ticked' if S['skip_invalidated_events'] else 'not ticked'}; this signal {'does' if ls['level_invalidated'] else 'does not'} end its level"),
-                ("Trade side (from the level origin)", engine.side_from_origin(ls["origin_direction"]) != 0,
-                 f"level origin {ls['origin_direction']} -> trade {SIDE_LABEL.get(engine.side_from_origin(ls['origin_direction'])) or 'none'}"
-                 f" · the pattern ({ls['pattern'].replace(' (candidate)', '')}) only triggers it, it never sets the side"),
+                ("Trade side (direction rule)", engine.side_for_event(ls) != 0,
+                 f"{ls['pattern'].replace(' (candidate)', '')} on a {ls['origin_direction']}-origin level -> "
+                 f"trade {SIDE_LABEL.get(engine.side_for_event(ls)) or 'none'}"
+                 f" · a strong close trades its pattern's side, a rejection its level's origin; the EMA20 never sets the side"),
                 ("Level is from today (IST)",
                  engine.ist_date(ls["event_time"]) == pd.Timestamp.now(tz=IST).date(),
                  f"signal day {engine.ist_date(ls['event_time'])} · today {pd.Timestamp.now(tz=IST).date()} · "
@@ -791,10 +797,11 @@ with tab_pnl:
                "Force trade places one trade immediately at the live price. Your click is the consent for one rule "
                "only — the Tue–Thu 19:00–23:00 IST trading hours — so it trades outside the window too, and that "
                "trade has no 23:00 close. It is never counted in the automatic window cap, so the test lane is "
-               "unlimited. Everything else still applies: trading must be RUNNING, the side comes from the level's "
-               "origin direction, your settings filters are checked, and only one position is held at a time. "
+               "unlimited. Everything else still applies: trading must be RUNNING, the side follows the direction "
+               "rule (strong close -> its pattern's side, rejection -> its level's origin), your settings filters are "
+               "checked, and only one position is held at a time. "
                "Force works from TODAY's levels only: it takes today's newest SIGNAL (a strong close or a "
-               "rejection), whichever side its origin gives, and enters at the live price, so yesterday's signal is "
+               "rejection), whichever side the rule gives, and enters at the live price, so yesterday's signal is "
                "never carried into today. A bare level touch is not a signal, so it is never forced. The EMA20 is "
                "not consulted when entering - it only closes the trade. When nothing from today matches, it places "
                "nothing and says why.")

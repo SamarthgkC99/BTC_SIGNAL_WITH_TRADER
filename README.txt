@@ -16,15 +16,17 @@ Trading rules (all editable in Settings)
     and Thursday, 19:00-23:00 IST, judged by the signal candle's close time. Signals at any
     other time are logged as skipped and never traded. Every still-open position is closed at
     23:00 IST, profit or loss (exit reason WINDOW_END).
-  * Origin direction. BUY only when the level's originating impulse was bullish, SELL only when
-    it was bearish. The trade side comes from the level's origin_direction, exactly as the
-    Historical event study table shows it: Bullish-origin level -> BUY, Bearish-origin level
-    -> SELL. The event pattern only decides WHEN that trade happens; it never sets the side,
-    so a bearish-origin level can never produce a BUY. This is absolute: there is no switch
-    for it and the Force button does not lift it. If a level has no Bullish/Bearish origin at
-    all, the trade is skipped - the pattern's own side is never used as a fallback, so a signal
-    can never sneak in as a BUY on a bearish setup. The event study shows the side the origin
-    gives each row in its trade_side_by_origin column.
+  * Trade direction (v26 rule). A signal's side depends on the pattern:
+      - STRONG CLOSE through the level = continuation. The trade goes with the pattern's own
+        side: a strong close ABOVE the level is a BUY, a strong close BELOW it is a SELL, even
+        when that goes against the level's origin direction.
+      - REJECTION off the level = the level holding. The trade follows the level's origin
+        direction, exactly as the Historical event study shows it: Bullish-origin level -> BUY,
+        Bearish-origin level -> SELL.
+    The EMA20 never sets the side - it only closes the trade. If a signal has no usable
+    direction (a bare level touch, or a rejection on a level with no Bullish/Bearish origin),
+    the trade is skipped. There is no switch for the rule and the Force button does not lift
+    it. The event study shows the side the rule gives each row in its trade_side column.
   * Only a defined pattern is a signal. A strong close through the level or a rejection off it
     makes the event a signal; a bare level touch with no pattern is shown on the Study tab as
     "not a signal (no pattern)", its trade column is empty, and the trader never acts on it -
@@ -36,11 +38,11 @@ Trading rules (all editable in Settings)
     is a normal new trade, and while a position of that direction is still open it is simply
     kept (one position at a time).
   * Today's newest signal, both sides. The Force button takes TODAY's newest SIGNAL, whatever
-    side its origin gives - a Bullish-origin level places a BUY and a Bearish-origin level places
-    a SELL, so a BUY is never refused just because the price sits below the EMA20. The EMA20 is
-    never consulted for an entry; it only closes trades (a position exits when a candle CLOSES
-    through it). A bare level touch is not a signal and cannot be forced. A level from an earlier
-    day is never carried into today.
+    side the direction rule gives - a strong close trades its pattern's side and a rejection its
+    level's origin - so a trade is never refused just because the price sits below the EMA20.
+    The EMA20 is never consulted for an entry; it only closes trades (a position exits when a
+    candle CLOSES through it). A bare level touch is not a signal and cannot be forced. A level
+    from an earlier day is never carried into today.
   * Automatic window trades per IST day: a Settings field (1-50, default 4). The worker's
     window entries are capped at that many per IST date, flips included. The Force button is the
     test lane: it is never counted and has no daily limit.
@@ -56,7 +58,7 @@ Trading rules (all editable in Settings)
     exactly as it does inside the window, with NO limit on how many. On Start it also takes
     today's newest signal straight away at the live price, so the session begins with a trade
     instead of waiting for the next one. Only the hours change: today's levels, a defined
-    pattern, the origin side, one position at a time, your settings filters and the EMA20 exit
+    pattern, the direction rule, one position at a time, your settings filters and the EMA20 exit
     all work exactly as usual, and Window trading must be RUNNING (Stop also ends the session).
     When the session ends, any position it opened is closed at the market (exit reason
     FORCE_END); those trades are tagged trigger 'force-hours', never count toward the window's
@@ -71,9 +73,10 @@ Trading rules (all editable in Settings)
     carried over from an older build (it may still say mode TEST, the removed second lane) is
     adopted into the one lane, so it is flipped and managed by the EMA20 like every other
     position instead of being ignored.
-  * Bad-direction cleanup. If an open position's stored level origin points against its own
-    side (only possible from an older build or a force entry made before the rule was
-    absolute), the worker closes it at the latest price with exit reason ORIGIN_FIX.
+  * Bad-direction cleanup. A rejection that somehow sits against its level's origin (only
+    possible from an older build or a force entry made before the rule) is closed by the worker
+    at the latest price with exit reason ORIGIN_FIX. A strong-close trade is never touched: it
+    is allowed to sit against the origin, because its side comes from the pattern.
   * Sizing and exits. Entry at the signal candle's close (live price for a startup catch-up and
     the Force button). Lot $20 notional, initial balance $5,000. On Delta Exchange India data
     (BTCUSD perpetual) the trade is sized by a lot quantity instead, the same as the exchange's
@@ -89,10 +92,10 @@ Trading rules (all editable in Settings)
     it - is the move the trader wants, so it never closes the trade; the trade keeps running as
     the price carries on lower (for a SELL) or higher (for a BUY). What closes it is the price
     turning back against the position and closing on the other side of the EMA20.
-    Where the EMA sits at entry never blocks a trade: the signal alone decides the entry. A trade
-    entered on the wrong side of the EMA (a SELL signalled above it, a BUY below it) is managed
-    once a candle has first closed on its own side, so the entry itself cannot close it.
-    A touch alone is never enough - the candle has to close across the EMA.
+    Where the EMA sits at entry never blocks a trade: the signal alone decides the entry, and a
+    trade can enter on either side of the line. The protector is active from the entry candle:
+    whichever side of the EMA20 the entry was on, the first candle that CLOSES against the trade
+    ends it. A touch alone is never enough - the candle has to close across the EMA.
   * Start now = trade now. On startup, or when Start is pressed, the trader takes the newest
     signal if its own candle closed inside the trading window, however old it is, and it passes
     the rules (the day's cap included). It never replays older history, and a restart
@@ -120,17 +123,18 @@ Force trade now (the unlimited test lane)
   outside Tue-Thu 19:00-23:00 IST without pressing Force for every trade.
   A manual test entry, so YOU are the consent for the one thing a human click should decide:
   the trading hours. It places ONE trade instantly at the live price following TODAY's newest
-  SIGNAL (a strong close or a rejection), whichever side its origin gives - a Bullish-origin
-  level is a BUY, a Bearish-origin one a SELL. The EMA20 is not consulted when entering; it only
-  closes the trade. A bare level touch is not a signal, so it is never forced. A level from an
-  earlier day is never carried into today: yesterday's bullish level cannot put on today's BUY.
+  SIGNAL (a strong close or a rejection), on the side the direction rule gives: a strong close
+  trades its pattern's side, a rejection follows the level's origin (Bullish-origin -> BUY,
+  Bearish-origin -> SELL). The EMA20 is not consulted when entering; it only closes the trade. A
+  bare level touch is not a signal, so it is never forced. A level from an earlier day is never
+  carried into today: yesterday's signal cannot put on today's trade.
   It works inside or outside Tue-Thu 19:00-23:00 IST, and a trade forced outside the hours has
   no 23:00 close (it runs until the EMA20 exit, the opposite signal, Stop, or the time exit).
   Forced trades are never counted in the automatic window cap, so the test lane is unlimited.
-  Everything else still applies: Window trading must be RUNNING, the side comes from the
-  level's origin direction, your level-invalidated / origin-filter / data-currency settings are
-  checked, and only one position is held at a time (an opposite one is flipped first). Anything
-  blocked shows the reason and places nothing.
+  Everything else still applies: Window trading must be RUNNING, the side follows the direction
+  rule, your level-invalidated / origin-filter / data-currency settings are checked, and only
+  one position is held at a time (an opposite one is flipped first). Anything blocked shows the
+  reason and places nothing.
 
 Price provider (sidebar)
   Auto chain, or choose Binance / Delta Exchange India (BTCUSD perp) / Bybit / OKX / KuCoin /

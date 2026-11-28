@@ -34,14 +34,17 @@ newest = d.sort_values("event_time").iloc[-1]
 chk("newest signal is the last row by candle close", newest["event_time"] == d["event_time"].max())
 chk("every defined signal has a Bullish/Bearish origin",
     all(engine.side_from_origin(o) in (-1, 1) for o in d["origin_direction"]))
-print(f"     live: newest defined signal = {LABEL[engine.side_from_origin(newest['origin_direction'])]} "
+chk("every defined signal has a usable trade direction under the v26 rule",
+    all(engine.side_for_event(r) in (-1, 1) for _, r in d.iterrows()))
+print(f"     live: newest defined signal = {LABEL[engine.side_for_event(newest)]} "
+      f"({newest['pattern'].replace(' (candidate)', '')}) "
       f"from level {newest['level_price']:,.1f} origin {newest['origin_direction']} "
       f"at {newest['event_time'].tz_convert('Asia/Kolkata'):%a %d %b %H:%M IST} · "
       f"{engine.signal_age(newest, latest_open, IV)} candle(s) old")
 
 in_win = signals.in_trade_window(newest["event_time"] + IV)
 why = engine.manual_entry_reason(engine.new_state(S), S, newest,
-                                 engine.side_from_origin(newest["origin_direction"]), latest_open, IV, quote)
+                                 engine.side_for_event(newest), latest_open, IV, quote)
 chk("Force ignores the trading hours (your click is that consent), whatever the signal's age",
     why is None, f"{why or 'allowed'} · signal candle {'inside' if in_win else 'outside'} the window")
 st_live = engine.new_state(S)
@@ -61,20 +64,31 @@ def mk(origin, pattern, side, minutes_ago=1, price=59000.0, base=BASE):
             "level_time": base - (minutes_ago + 30) * IV, "level_price": 59139.8, "level_id": 12}
 
 
+# v26 direction rule: a strong close trades its PATTERN's side (continuation); a rejection
+# follows the level's origin. The plan is exactly the 13 live trades that lost: 11 of them were
+# BUYs of a strong close below a Bullish-origin level, and those are SELLs under this rule.
 bear = mk("Bearish", "Strong close above level (candidate)", 1)
-chk("bearish origin -> SELL", engine.side_from_origin(bear["origin_direction"]) == -1)
-chk("Force allows a fresh bearish signal",
-    engine.manual_entry_reason(engine.new_state(S), S, bear, -1, BASE, IV, quote) is None)
+chk("a strong close above a bearish-origin level is a BUY (the pattern's side)",
+    engine.side_for_event(bear) == 1, engine.side_for_event(bear))
+chk("Force allows a fresh signal on the rule's side",
+    engine.manual_entry_reason(engine.new_state(S), S, bear, 1, BASE, IV, quote) is None)
 
 st_b = engine.new_state(S)
 engine._consider(st_b, S, bear, BASE, IV, "test", quote)
-chk("worker places SELL on a bearish signal", [t["side"] for t in st_b["trades"]] == ["SELL"],
+chk("worker buys a strong close above the level", [t["side"] for t in st_b["trades"]] == ["BUY"],
     [t["side"] for t in st_b["trades"]])
 
 st_u = engine.new_state(S)
 engine._consider(st_u, S, mk("Bullish", "Strong close below level (candidate)", -1), BASE, IV, "test", quote)
-chk("worker places BUY on a bullish signal", [t["side"] for t in st_u["trades"]] == ["BUY"],
+chk("worker sells a strong close below the level", [t["side"] for t in st_u["trades"]] == ["SELL"],
     [t["side"] for t in st_u["trades"]])
+
+rej = mk("Bearish", "Bearish rejection (candidate)", -1)
+chk("a rejection still follows the level's origin (Bearish -> SELL)",
+    engine.side_for_event(rej) == -1, engine.side_for_event(rej))
+chk("a rejection forced on the other side is refused",
+    engine.manual_entry_reason(engine.new_state(S), S, rej, 1, BASE, IV, quote) is not None)
+chk("a bare touch has no trade direction", engine.side_for_event(mk("Bullish", "Touch / no defined pattern", 0)) == 0)
 
 # ---------------------------------------------------------------- no signal-freshness rule
 LATE = pd.Timestamp("2026-11-24T17:20:00Z")          # Tue 22:50 IST, near the end of the window
@@ -82,10 +96,10 @@ old = mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=45, b
 chk("the sample signal really is 45 candles old and still in-window",
     engine.signal_age(old, LATE, IV) == 45 and signals.in_trade_window(old["event_time"] + IV))
 chk("Force ignores the signal's age entirely",
-    engine.manual_entry_reason(engine.new_state(S), S, old, -1, LATE, IV, quote) is None)
+    engine.manual_entry_reason(engine.new_state(S), S, old, engine.side_for_event(old), LATE, IV, quote) is None)
 st_o = engine.new_state(S)
 engine._consider(st_o, S, old, LATE, IV, "test", quote)
-chk("worker trades a 45-candle-old in-window signal", [t["side"] for t in st_o["trades"]] == ["SELL"],
+chk("worker trades a 45-candle-old in-window signal", [t["side"] for t in st_o["trades"]] == ["BUY"],
     st_o["signals"][-1]["action"])
 
 # ---------------------------------------------------------------- no repeat-direction rule
@@ -116,8 +130,8 @@ engine._consider(st_f, S, mk("Bullish", "Strong close below level (candidate)", 
                  BASE, IV, "test", quote)
 engine._consider(st_f, S, bear, BASE, IV, "test", quote)
 open_now = [t for t in st_f["trades"] if t["status"] == "OPEN"]
-chk("open BUY is flipped to SELL by the newer bearish signal",
-    len(open_now) == 1 and open_now[0]["side"] == "SELL",
+chk("open SELL is flipped to BUY by the newer strong close above",
+    len(open_now) == 1 and open_now[0]["side"] == "BUY",
     f"trades={[(t['id'], t['side'], t['status']) for t in st_f['trades']]}")
 
 # a position left over from the older build's removed TEST lane must flip like any other
@@ -126,12 +140,12 @@ engine._consider(st_legacy, S, mk("Bullish", "Strong close below level (candidat
                  BASE, IV, "test", quote)
 st_legacy["trades"][0]["mode"] = "TEST"              # exactly what the previous build saved
 chk("a TEST-lane carry-over does not block the opposite side",
-    engine.manual_entry_reason(st_legacy, S, bear, -1, BASE, IV, quote) is None,
-    engine.manual_entry_reason(st_legacy, S, bear, -1, BASE, IV, quote) or "allowed")
+    engine.manual_entry_reason(st_legacy, S, bear, 1, BASE, IV, quote) is None,
+    engine.manual_entry_reason(st_legacy, S, bear, 1, BASE, IV, quote) or "allowed")
 engine._consider(st_legacy, S, bear, BASE, IV, "test", quote)
 open_now = [t for t in st_legacy["trades"] if t["status"] == "OPEN"]
 chk("the opposite signal flips an older TEST-lane position instead of leaving two open",
-    len(open_now) == 1 and open_now[0]["side"] == "SELL" and st_legacy["trades"][0]["exit_reason"] == "REVERSED",
+    len(open_now) == 1 and open_now[0]["side"] == "BUY" and st_legacy["trades"][0]["exit_reason"] == "REVERSED",
     f"trades={[(t['id'], t['side'], t['status'], t.get('exit_reason')) for t in st_legacy['trades']]}")
 
 st_stop = engine.new_state(S)
@@ -160,7 +174,7 @@ chk("a third automatic window trade on the same IST day is refused by a cap of 2
     len(st_cap["trades"]) == 2 and "window trades" in st_cap["signals"][-1]["action"],
     st_cap["signals"][-1]["action"])
 chk("Force is not stopped by the cap",
-    engine.manual_entry_reason(st_cap, S_cap, third, -1, BASE, IV, quote) is None)
+    engine.manual_entry_reason(st_cap, S_cap, third, engine.side_for_event(third), BASE, IV, quote) is None)
 
 st_force = engine.new_state(S_cap)
 st_force["trades"] = [dict(t) for t in st_cap["trades"]]
@@ -181,11 +195,12 @@ engine._consider(st_next, S_cap, mk("Bearish", "Strong close above level (candid
 chk("the cap resets on the next IST day", len(st_next["trades"]) == 3, len(st_next["trades"]))
 
 st_four = engine.new_state(S)
-for n, (origin, side) in enumerate((("Bearish", 1), ("Bullish", -1), ("Bearish", 1), ("Bullish", -1))):
-    engine._consider(st_four, S, mk(origin, "Strong close above level (candidate)", side, minutes_ago=20 - 4 * n),
-                     BASE, IV, "test", quote)
+for n, side in enumerate((1, -1, 1, -1)):
+    pattern = ("Strong close above level (candidate)" if side > 0
+               else "Strong close below level (candidate)")
+    engine._consider(st_four, S, mk("Bullish", pattern, side, minutes_ago=20 - 4 * n), BASE, IV, "test", quote)
 chk("the default cap allows four automatic window trades a day", len(st_four["trades"]) == 4, len(st_four["trades"]))
-engine._consider(st_four, S, mk("Bearish", "Strong close above level (candidate)", 1, minutes_ago=1),
+engine._consider(st_four, S, mk("Bullish", "Strong close above level (candidate)", 1, minutes_ago=1),
                  BASE, IV, "test", quote)
 chk("the fifth is refused with the default cap",
     len(st_four["trades"]) == 4 and "4 automatic window trades" in st_four["signals"][-1]["action"],
@@ -269,24 +284,26 @@ flat = [100.0] * 25
 print(f"     EMA20 with 25 flat 100 candles and one 105 print: "
       f"{signals.add_ema(candles(flat + [105.0]))['ema20'].iloc[-1]:,.2f}")
 
-# A SELL taken above the EMA is NOT closed when it falls through the EMA - the cross down is the move
-# it is riding - and it closes only when a candle closes back above the EMA.
+# The protector is active from the entry candle, whichever side of the EMA20 the entry was on.
 t = ema_exit(flat + [105.0, 106.0, 95.0], -1, 25, 105.0)
-chk("a SELL entered above the EMA20 is held when the price crosses down through it",
-    t["status"] == "OPEN" and t["ema_entry_side"] == 1, t.get("exit_reason"))
+chk("a SELL entered above the EMA20 is cut on the first close above it (armed from entry)",
+    t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 106.0) < 1e-9 and t["ema_entry_side"] == 1,
+    f"{t.get('exit_reason')} @ {t.get('exit_price')} · entry side {t['ema_entry_side']}")
 
+# A move the trade is riding is still held: the crossing through the EMA is not an exit.
 t = ema_exit(flat + [105.0, 95.0, 104.0], -1, 25, 105.0)
-chk("that SELL exits only when a candle closes back ABOVE the EMA20",
+chk("a SELL that crossed down through the EMA20 exits on the first close back above it",
     t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 104.0) < 1e-9,
     f"{t.get('exit_reason')} @ {t.get('exit_price')}")
 
-# The mirror for a BUY: climbing through the EMA is held, closing back below it is the exit.
+# The mirror for a BUY.
 t = ema_exit(flat + [95.0, 96.0, 103.0], 1, 25, 95.0)
-chk("a BUY entered below the EMA20 is held when the price crosses up through it",
-    t["status"] == "OPEN", t.get("exit_reason"))
+chk("a BUY entered below the EMA20 is cut on the first close below it (armed from entry)",
+    t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 96.0) < 1e-9 and t["ema_entry_side"] == -1,
+    f"{t.get('exit_reason')} @ {t.get('exit_price')} · entry side {t['ema_entry_side']}")
 
 t = ema_exit(flat + [95.0, 103.0, 95.0], 1, 25, 95.0)
-chk("that BUY exits only when a candle closes back BELOW the EMA20",
+chk("a BUY that crossed up through the EMA20 exits on the first close back below it",
     t["exit_reason"] == "EMA20" and abs(t["exit_price"] - 95.0) < 1e-9,
     f"{t.get('exit_reason')} @ {t.get('exit_price')}")
 
