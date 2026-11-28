@@ -19,23 +19,28 @@ Trading rules (all editable in Settings)
   * Origin direction. BUY only when the level's originating impulse was bullish, SELL only when
     it was bearish. The trade side comes from the level's origin_direction, exactly as the
     Historical event study table shows it: Bullish-origin level -> BUY, Bearish-origin level
-    -> SELL. Every level touch is a signal now: a strong close or a rejection is only a label
-    on the event, never a filter and never the side, so a bearish-origin level can never produce
-    a BUY and no touch is thrown away as "not a signal". This is absolute: there is no switch
+    -> SELL. The event pattern only decides WHEN that trade happens; it never sets the side,
+    so a bearish-origin level can never produce a BUY. This is absolute: there is no switch
     for it and the Force button does not lift it. If a level has no Bullish/Bearish origin at
-    all, the trade is still skipped. The event study shows the side the origin gives each row in
-    its trade_side_by_origin column.
+    all, the trade is skipped - the pattern's own side is never used as a fallback, so a signal
+    can never sneak in as a BUY on a bearish setup. The event study shows the side the origin
+    gives each row in its trade_side_by_origin column.
+  * Only a defined pattern is a signal. A strong close through the level or a rejection off it
+    makes the event a signal; a bare level touch with no pattern is shown on the Study tab as
+    "not a signal (no pattern)", its trade column is empty, and the trader never acts on it -
+    not in the window, not on a restart, and not through the Force button.
   * Today's levels only. The trader enters only on a level from the current IST day, in the
     window and in the Force button alike. A restart, a catch-up or a carry-in can no longer
     carry yesterday's signal into today: rows from earlier days are history. A restart still
     cannot trade the same signal twice, a same-direction signal after the previous trade closed
     is a normal new trade, and while a position of that direction is still open it is simply
     kept (one position at a time).
-  * Today's newest signal, both sides. The Force button takes TODAY's newest level, whatever
+  * Today's newest signal, both sides. The Force button takes TODAY's newest SIGNAL, whatever
     side its origin gives - a Bullish-origin level places a BUY and a Bearish-origin level places
-    a SELL, so a BUY is never refused just because the price sits below the EMA20. The EMA20 no
-    longer vetoes entries; it only closes them (a position exits when a candle CLOSES through
-    it). A level from an earlier day is never carried into today.
+    a SELL, so a BUY is never refused just because the price sits below the EMA20. The EMA20 is
+    never consulted for an entry; it only closes trades (a position exits when a candle CLOSES
+    through it). A bare level touch is not a signal and cannot be forced. A level from an earlier
+    day is never carried into today.
   * Automatic window trades per IST day: a Settings field (1-50, default 4). The worker's
     window entries are capped at that many per IST date, flips included. The Force button is the
     test lane: it is never counted and has no daily limit.
@@ -96,7 +101,9 @@ Trader controls (Live P&L tab)
 Force trade now (the unlimited test lane)
   A manual test entry, so YOU are the consent for the one thing a human click should decide:
   the trading hours. It places ONE trade instantly at the live price following TODAY's newest
-  level whose origin side fits the EMA20 (a BUY above it, a SELL below it). A level from an
+  SIGNAL (a strong close or a rejection), whichever side its origin gives - a Bullish-origin
+  level is a BUY, a Bearish-origin one a SELL. The EMA20 is not consulted when entering; it only
+  closes the trade. A bare level touch is not a signal, so it is never forced. A level from an
   earlier day is never carried into today: yesterday's bullish level cannot put on today's BUY.
   It works inside or outside Tue-Thu 19:00-23:00 IST, and a trade forced outside the hours has
   no 23:00 close (it runs until the EMA20 exit, the opposite signal, Stop, or the time exit).

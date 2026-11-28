@@ -110,9 +110,9 @@ def find_levels(df: pd.DataFrame, p: Params) -> list:
 
 
 def _row(level_no, level, label, i, o, h, l, c, times, fb, n):
-    # Every level touch is a signal: the side always comes from the level's origin direction,
-    # and a strong close / rejection is only a descriptive label, never a filter.
-    sig = 1 if level["direction"] == "Bullish" else -1
+    # Only a defined pattern is a signal. A bare level touch stays a touch (signal_side 0), so
+    # the trader never acts on it; the side itself still comes from the level's origin.
+    sig = PATTERN_SIDE.get(label, 0)
     if i + 1 + fb <= n:
         fwd = (c[i + fb] / c[i] - 1) * 100
         hi = (h[i + 1:i + 1 + fb].max() / c[i] - 1) * 100
@@ -157,7 +157,7 @@ def find_events_legacy(df: pd.DataFrame, levels: list, p: Params) -> pd.DataFram
             elif c[i] < lvl and o[i] > lvl and body[i] >= p.impulse_atr * atr[i] and cpos[i] <= 1 - edge:
                 label = "Strong close below level (candidate)"
             else:
-                label = "Level touch (traded, all signals)"
+                label = "Touch / no defined pattern"
             rows.append(_row(level_no, level, label, i, o, h, l, c, times, p.forward_bars, n))
             last_event_i = i
             if label.startswith("Strong close"):
@@ -212,7 +212,7 @@ def find_events(df: pd.DataFrame, levels: list, p: Params) -> pd.DataFrame:
                 elif upw[i] / bd >= p.wick_body_ratio and c[i] < o[i] and cpos[i] <= 0.5:
                     label = "Bearish rejection (candidate)"
                 else:
-                    label = "Level touch (traded, all signals)"
+                    label = "Touch / no defined pattern"
             if side != 0:
                 prev_side = side
             if label is None:
@@ -227,9 +227,8 @@ def find_events(df: pd.DataFrame, levels: list, p: Params) -> pd.DataFrame:
     ev = pd.DataFrame(rows)
     if ev.empty:
         return ev
-    # One event per candle: every touch is traded, so prefer the rounder label, then the
-    # most recent level.
-    ev["_def"] = (~ev["pattern"].astype(str).str.startswith("Level touch")).astype(int)
+    # One event per candle: prefer a defined pattern, then the most recent level.
+    ev["_def"] = (ev["signal_side"] != 0).astype(int)
     ev = (ev.sort_values(["event_time", "_def", "level_time"], ascending=[True, False, False])
             .drop_duplicates("event_time").drop(columns="_def"))
     return ev.sort_values("event_time").reset_index(drop=True)

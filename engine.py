@@ -4,10 +4,11 @@ Rules
   * Only the historical study's trading window is traded: Tue/Wed/Thu 19:00-23:00 IST,
     judged by the signal candle's close time. Signals outside it are logged and skipped.
   * The side comes from the level's origin direction, exactly as the Historical event study
-    shows it: a Bullish-origin level -> BUY, a Bearish-origin level -> SELL. Every level touch
-    is a signal: a strong close or a rejection is only a label on the event, never a filter and
-    never the direction, so a bearish-origin level can never produce a BUY. Nothing lifts this:
-    no setting and not the Force button.
+    shows it: a Bullish-origin level -> BUY, a Bearish-origin level -> SELL. A signal only exists
+    when a defined pattern fires (a strong close through the level, or a rejection off it): the
+    pattern decides WHEN the trade happens and never the side, and a bare level touch is not a
+    signal at all. So a bearish-origin level can never produce a BUY. Nothing lifts this: no
+    setting and not the Force button.
   * Today's levels only. The trader enters only on a level from the current IST day, so a
     restart, a catch-up or a carry-in cannot carry yesterday's signal into today (once per
     signal event, so a restart cannot trade the same one twice). The same direction can be
@@ -26,7 +27,8 @@ Rules
     while the price stays below the EMA20 and exits (reason EMA20) the first time a candle
     CLOSES above it; a BUY is mirrored and exits on a close below it. The crossing that goes
     with the trade - a SELL falling through the EMA, a BUY rising through it - is the move being
-    followed, so it never closes the trade. Where the EMA sits at entry never blocks the trade.
+    followed, so it never closes the trade. The EMA20 is the exit only: it never creates a
+    signal, never decides a side and never blocks an entry, wherever the price sits.
     A trade entered on the wrong side (a SELL signalled above the EMA, a BUY below it) is managed
     once a candle has first closed on its own side, so the entry itself cannot trigger the exit.
     A touch of the EMA is never enough: the candle has to close across it.
@@ -277,22 +279,24 @@ def ema_side_ok(price, ema, side):
 
 
 def pick_force_event(events, today_ist, price=None, ema=None):
-    """The event the Force button follows: today's newest level, whichever side its origin gives.
-    Returns (event, why_not) - event is None when there is nothing from today.
+    """The event the Force button follows: today's newest SIGNAL, whichever side its origin gives.
+    Returns (event, why_not) - event is None when today has no signal yet.
 
     Only today's rows are used: a signal from yesterday can no longer describe today's market.
-    Nothing else filters it - your click is the trigger, and both a BUY (Bullish-origin level) and
-    a SELL (Bearish-origin level) are taken, so a BUY is never refused because the price happens to
-    sit below the EMA20. The EMA20 still closes positions; it no longer vetoes entries. `price` and
-    `ema` are accepted for older callers and are not used.
+    Only a defined pattern is a signal, so a bare level touch can never be forced. Both a BUY
+    (Bullish-origin level) and a SELL (Bearish-origin level) are taken: the side comes from the
+    origin, never from the EMA20, which only closes positions. `price` and `ema` are accepted for
+    older callers and are not used.
     """
     if events is None or len(events) == 0:
         return None, "no levels or signals are loaded yet"
     when = pd.to_datetime(events["event_time"], utc=True).dt.tz_convert(signals.IST).dt.date
-    today = events[when == today_ist].sort_values("event_time", ascending=False)
+    today = events[when == today_ist]
+    today = today[pd.to_numeric(today["signal_side"], errors="coerce").fillna(0) != 0]
     if today.empty:
-        return None, "there is no level or signal from today yet"
-    return today.iloc[0], None
+        return None, ("no level from today has fired a signal yet - a bare level touch is not a "
+                      "signal, so wait for a strong close or a rejection")
+    return today.sort_values("event_time", ascending=False).iloc[0], None
 
 
 def ema_at(closed, ts):
@@ -324,7 +328,7 @@ def manual_entry_reason(state, s, ev, side, latest_open, iv, quote):
                         pd.Timestamp(ev["level_time"]).isoformat(), quote, side, "window")
 
 
-RULES_BUILD = "ema20 trend exit v23 2026-11-28"     # shown on the page so you can confirm which build is live
+RULES_BUILD = "patterns + origin side v24 2026-11-28"     # shown on the page so you can confirm which build is live
 
 
 def open_in_lane(state, lane):
@@ -470,6 +474,9 @@ def _consider(state, s, ev, latest_open, iv, source, quote, closed=None, entry_o
     cap = max_window_trades(s)
     if side == 0:
         reason = "the level has no origin direction (not Bullish or Bearish)"
+    elif int(ev.get("signal_side", 1) or 0) == 0:
+        reason = ("a bare level touch is not a signal: only a strong close through the level or a "
+                  "rejection off it opens a trade")
     elif ist_date(ev["event_time"]) != ist_date(latest_open):
         reason = (f"the level is not from today: it fired on {ist_date(ev['event_time']):%a %d %b} and the trader "
                   f"only trades today's levels, so yesterday's signal is never carried into today")

@@ -305,8 +305,8 @@ with tab_study:
         today_pick, today_why = engine.pick_force_event(events, pd.Timestamp.now(tz=IST).date(),
                                                         price_now, ema_study)   # today's newest only
         if today_pick is None:
-            st.info(f"**No level to trade today:** {today_why}. Only today's levels are traded, so a signal from an "
-                    f"earlier day is history — it is never carried into today.")
+            st.info(f"**No signal to trade today:** {today_why}. Only today's levels are traded, so a signal from "
+                    f"an earlier day is history — it is never carried into today.")
         else:
             t_side = SIDE_LABEL.get(engine.side_from_origin(today_pick["origin_direction"])) or "no side"
             t_when = pd.Timestamp(today_pick["event_time"]).tz_convert(IST).strftime("%a %d %b %H:%M IST")
@@ -314,10 +314,11 @@ with tab_study:
             st.success(
                 f"**Today's signal: {t_side}** — today's newest {today_pick['origin_direction']}-origin level at "
                 f"{today_pick['level_price']:,.2f} (level {int(today_pick['level_id'])}), {t_pattern.lower()} on "
-                f"{t_when}. Its origin gives {t_side}, and that is what the trader takes - both BUY and SELL "
-                f"levels are followed, the EMA20 only closes a trade (price {price_now:,.2f} {quote_currency} is "
+                f"{t_when}. Its origin gives {t_side} and that is what the trader takes; the EMA20 never picks a "
+                f"side, it only closes the trade (price {price_now:,.2f} {quote_currency} is "
                 f"{'above' if ema_study is None or price_now > ema_study else 'below'} the EMA20 "
-                f"{ema_study:,.2f}) · {'window OPEN' if win_open else 'window closed right now'}")
+                f"{'(not loaded)' if ema_study is None else format(ema_study, ',.2f')}) · "
+                f"{'window OPEN' if win_open else 'window closed right now'}")
         st.caption(f"Trade window right now: {'OPEN' if win_open else 'closed'} · signals are shown at any day/time; "
                    "signals inside the window go to the Window lane, all other times to the Test lane (Live P&L tab).")
 
@@ -394,9 +395,10 @@ with tab_study:
             v["in_trade_window"] = v["event_close_time"].apply(in_trade_window)
             v["trade_side_by_origin"] = v["origin_direction"].map(
                 lambda o: SIDE_LABEL.get(engine.side_from_origin(o)) or "none")
-            # `trade` is the side the trader really takes (the origin side). Every level touch is a
-            # signal now, so no row is excluded; outside the window it shows as "signal only".
-            v["trade"] = np.where(v["in_trade_window"], v["trade_side_by_origin"], "signal only")
+            # `trade` is the side the trader would really take (the origin side), and only on a row
+            # that is a defined signal: a level touch with no pattern is never a trade.
+            v["trade"] = np.where(v["signal_side"] == 0, "",
+                                  np.where(v["in_trade_window"], v["trade_side_by_origin"], "signal only"))
             order = st.radio("Order", ["By level, then time (as in the first version)", "Newest first"],
                              horizontal=True)
             v = (v.sort_values(["level_id", "event_time"]) if order.startswith("By level")
@@ -405,7 +407,9 @@ with tab_study:
                                                    float(closed["close"].iloc[-1]), ema_study)
             if _pk is not None:
                 _pt = _pk["event_time"]
-                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this (today's level)", "")
+                v["trader_pick"] = np.where(v["event_time"] == _pt, "⬅ trader uses this (today's signal)",
+                                            np.where((v["event_time"] > _pt) & (v["signal_side"] == 0),
+                                                     "⚠️ not a signal (no pattern)", ""))
             else:
                 v["trader_pick"] = ""
             v["level_time"] = v["level_time"].dt.tz_convert(IST).astype(str)      # e.g. 2026-11-06 11:00:00+05:30
@@ -422,15 +426,15 @@ with tab_study:
                            f"from an earlier day is history.")
             else:
                 st.caption(
-                    f"**Level the trader uses** (today's newest level on the EMA20's side, not the top row): "
+                    f"**Level the trader uses** (today's newest SIGNAL, not the top row): "
                     f"{SIDE_LABEL.get(engine.side_from_origin(_pk['origin_direction'])) or 'no side'} — level "
                     f"{_pk['level_price']:,.2f}, origin {_pk['origin_direction']}, "
                     f"event {pd.Timestamp(_pk['event_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}, "
                     f"level created {pd.Timestamp(_pk['level_time']).tz_convert(IST).strftime('%a %d %b %H:%M IST')}. "
-                    f"The row marked '⬅ trader uses this' is the one the Force button takes, and a column sort you "
-                    f"clicked can show an older row at the top. **Every level touch is a trade now**: a touch with "
-                    f"no strong close or rejection is only labelled 'Level touch (traded, all signals)' and it "
-                    f"opens the same origin-side trade as any other signal. "
+                    f"The row marked '⬅ trader uses this' is the only one it acts on, and a column sort you "
+                    f"clicked can show an older row at the top. A **newer level above it is not a signal**: a touch "
+                    f"with no strong close or rejection is marked '⚠️ not a signal (no pattern)', its trade column "
+                    f"is empty, and it cannot open a trade - the side and the entry only exist once a pattern fires. "
                     f"It is {engine.signal_age(_pk, closed['open_time'].iloc[-1], iv_td)} candle(s) old. Only "
                     f"TODAY's levels are traded (window trades and Force alike), up to "
                     f"{engine.max_window_trades(S)} automatic window trades per IST day; a row from an earlier day "
@@ -584,7 +588,7 @@ with tab_pnl:
                     read_key.clear()
                     state = fresh
                     ago = int((closed["open_time"].iloc[-1] - last["event_time"]) / pd.Timedelta(minutes=INTERVAL_MIN[interval]))
-                    _kind = last["pattern"].replace(" (candidate)", "").replace("(traded, all signals)", "signal")
+                    _kind = last["pattern"].replace(" (candidate)", "") + " signal"
                     _res("success", f"Placed {item['mode']} {SIDE_LABEL[side]} at {live_price:,.2f} following today's "
                                f"{_kind} from {ago} candle(s) ago — "
                                f"level {last['level_price']:,.2f} (origin {last['origin_direction']})"
@@ -689,9 +693,11 @@ with tab_pnl:
                "trade has no 23:00 close. It is never counted in the automatic window cap, so the test lane is "
                "unlimited. Everything else still applies: trading must be RUNNING, the side comes from the level's "
                "origin direction, your settings filters are checked, and only one position is held at a time. "
-               "Force works from TODAY's levels only: it takes today's newest level whose origin matches the EMA20 "
-               "(a BUY above it, a SELL below it) and enters at the live price, so yesterday's signal is never "
-               "carried into today. When nothing from today matches, it places nothing and says why.")
+               "Force works from TODAY's levels only: it takes today's newest SIGNAL (a strong close or a "
+               "rejection), whichever side its origin gives, and enters at the live price, so yesterday's signal is "
+               "never carried into today. A bare level touch is not a signal, so it is never forced. The EMA20 is "
+               "not consulted when entering - it only closes the trade. When nothing from today matches, it places "
+               "nothing and says why.")
     mode = st.radio("Show", ["All", "WINDOW"], horizontal=True)
     sm = engine.account_summary(state, mode, price_for_pnl)
     a1, a2, a3 = st.columns(3)
